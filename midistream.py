@@ -2,6 +2,8 @@
 from pathlib import Path
 import heapq
 import mmap
+from pprint import pprint
+import time
 from typing import TypedDict
 
 MThd = b"MThd"
@@ -52,8 +54,8 @@ def get_midi_data(file: Path, verbose=False) -> MIDIData:
                     raise ValueError(f"Invalid MIDI file structure (probably) (Index: {f.tell():,})")
         return out
 
-def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], verbose=False):
-    chunk = m_file[track_index[0] : track_index[0] + track_index[1]]
+def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], track_num: int, verbose=False):
+    chunk = memoryview(m_file)[track_index[0] : track_index[0] + track_index[1]]
     ci = 0
     previous_event_type = 0
     current_time = 0
@@ -80,22 +82,20 @@ def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], verbose=False):
                     tempo_us <<= 8
                     tempo_us += i
                 tempo = 60_000_000.0/float(tempo_us)
-                yield (current_time, "tempo", tempo)
+                yield (track_num, current_time, "tempo", tempo, None)
                 ci += length[0]
             else:
-                yield (current_time, "ignore")
                 ci += length[0]
         elif event_type in range(0xf0, 0xf8): # sysex messages, unnecessary for now
             length = decode_vlq(chunk[ci:ci+4])
-            yield (current_time, "ignore")
             ci += length[1] + length[0]
 
         elif event_type >> 4 in [0x8, 0x9, 0xa, 0xb, 0xe]: # note off/on, polyphonic pressure, controller, and pitch bend events
-            yield (current_time, event_type, chunk[ci], chunk[ci+1])
+            yield (track_num, current_time, event_type, chunk[ci], chunk[ci+1])
             ci += 2
 
         elif event_type >> 4 in [0xc, 0xd]: # program change/channel pressure event
-            yield (current_time, event_type, chunk[ci])
+            yield (track_num, current_time, event_type, chunk[ci], None)
             ci += 1
 
         previous_event_type = event_type
@@ -107,8 +107,14 @@ def midi_stream(file: Path, verbose=False):
     with file.open("rb") as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
             track_generators = []
-            for track_index in midi_data["track_indices"]:
-                track_generators.append(parse_track(m, track_index, verbose))
-            merged_stream = heapq.merge(*track_generators, key=lambda event: event[0])
+            for i, track_index in enumerate(midi_data["track_indices"]):
+                track_generators.append(parse_track(m, track_index, i, verbose))
+            merged_stream = heapq.merge(*track_generators, key=lambda event: event[1])
             for event in merged_stream:
                 yield event
+
+if __name__ == "__main__":
+    stream = midi_stream(Path(r"D:\MIDIs\Toilet_Story_3_-_700_TRACK_VERSION\Toilet Story 3 - 700 TRACK VERSION!!!.mid"), verbose=True)
+    while (event := next(stream, None)) is not None:
+        pass
+    print("Doen")

@@ -1,7 +1,9 @@
 # pyright: standard
+from pathlib import Path
 import time
 import mido
 import mparser
+import midistream
 import pyray as rl
 from tkinter import filedialog
 from collections import deque
@@ -33,81 +35,23 @@ PFA_COLORS = [
     (231, 255, 51)
 ]
 
-def parse_tracks(tracks, total_events):
-    color_palette: dict[tuple[int, int], tuple[int, int, int]] = {}
-    notes = 0
-    active_notes = {}
-    events = []
-
-    total_parsed = 0
-
-    cci = 0 # current color index
-    for i, track in enumerate(tracks, start=1):
-        tick = 0
-        for j, event in enumerate(track, start=1):
-            ignore_event = False
-            tick += event[0]
-            if event[1] == "ignore":
-                ignore_event = True
-            elif event[1] != "tempo":
-                if event[1] >> 4 == 0x9:
-                    if event[3] != 0:
-                        notes += 1
-                        if (i, event[1] & 0b1111) not in color_palette: # color palette thing
-                            color_palette[(i, event[1] & 0b1111)] = PFA_COLORS[cci%16]
-                            cci += 1
-                        nid = (i, event[1] & 0b1111, event[2]) # note identifier
-                        active_notes[nid] = active_notes.get(nid, 0) + 1 # add to active notes
-                if event[1] >> 4 in [0x8, 0x9]: # for removing active notes
-                    if event[1] >> 4 == 0x8 or event[3] == 0:
-                        nid = (i, event[1] & 0b1111, event[2]) # note identifier
-                        if nid in active_notes:
-                            active_notes[nid] -= 1
-                            if not active_notes[nid]:
-                                del active_notes[nid]
-                        else:
-                            ignore_event = True
-
-            if not ignore_event:
-                events.append([tick, i, *event[1:]])
-            # print(active_notes)
-            # if active_notes:
-            #     time.sleep(0.01)
-            total_parsed += 1
-            if total_parsed%1_000 == 0:
-                print(f"Parsed {total_parsed:,}/{total_events:,} events\r", end="")
-        # print(f"Parsed {i:,}/{len(tracks):,}")
-    print()
-    return {
-        "events": events,
-        "color_palette": color_palette,
-        "notes": notes,
-    }
-
 def main():
     file_path = file_dialog()
     print("Loading MIDI...")
     load_start = time.perf_counter()
-    midi = mparser.load_midi(file_path, verbose=True)
+    # midi = mparser.load_midi(file_path, verbose=True)
+    a_stream = midistream.midi_stream(Path(file_path), verbose=True)
+    v_stream = midistream.midi_stream(Path(file_path), verbose=True)
+    p_stream = midistream.midi_stream(Path(file_path), verbose=True)
     load_end = time.perf_counter()
     print(f"Took {load_end - load_start:.5f} seconds")
-
+    midi: midistream.MIDIData = midistream.get_midi_data(Path(file_path), verbose=True)
 
     mido.set_backend("kdmapi.mido_backend")
 
     ppq = midi["ppq"]
-    total_events = midi["event_count"]
-    parsed_tracks = parse_tracks(midi["tracks"], total_events)
-    events = parsed_tracks["events"]
-    color_palette = parsed_tracks["color_palette"]
-    notes = parsed_tracks["notes"]
+    color_palette: dict[tuple[int, int], tuple[int, int, int]] = {}
 
-    del midi, parsed_tracks
-
-    print(f"Notes: {notes:,}")
-
-    print("Sorting events...")
-    events = sorted(events, key=lambda x: x[0])
     print("Done!")
 
     with mido.open_output() as out: # type: ignore
@@ -117,7 +61,6 @@ def main():
         a_bpm = 120
         a_seconds_per_tick = 60 / (a_bpm * ppq)
         a_last_tick = 0
-        a_index = 0
         a_played_notes = 0
         a_polyphony = 0
         a_finished = False
@@ -126,6 +69,7 @@ def main():
         a_pitch_bend = []
         a_pitch_bend_range = []
         a_rpn = []
+        a_reuse_event = False
         # cython
         # for i in range(16):
         #     a_pitch_bend[i] = 0.0
@@ -138,10 +82,7 @@ def main():
             a_pitch_bend_range.append(2)
             a_rpn.append([0x7f, 0x7f])
         a_active_notes = [[deque() for _ in range(128)] for _2 in range(16)]
-        a_min_velocity = 0
-        a_max_delay = 0
 
-        v_index = 0
         v_bpm = 120
         v_seconds_per_tick = 60 / (v_bpm * ppq)
         v_last_tick = 0
@@ -151,7 +92,8 @@ def main():
         v_paused_start = time.perf_counter()
         v_paused_time = 0
         v_rendered = 0
-        v_max_rendered = 0
+        v_reuse_event = False
+        v_current_color_index = 0
 
         v_notes = {}            # Only stores ACTIVE notes
         v_falling_notes = deque() # Stores FINISHED notes (rendering only)
@@ -189,16 +131,16 @@ def main():
                     out.send(mido.Message.from_bytes([0xB0 + channel, 123, 0]))
                 if paused:
                     v_time += 2
-
-            while not paused or skipping:
-                if a_index >= len(events):
+            event = (0, 0, 0, 0, 0)
+            while not paused or skipping: # AUDIO LOOP
+                if (event := (event, a_reuse_event := False)[0] if a_reuse_event else next(a_stream, None)) is None:
                     a_finished = True
                     break
                 ignore_event = False
-                event = events[a_index]
                 a_delta_tick = event[0] - a_last_tick
                 a_current_time_temp = a_current_time + (a_delta_tick * a_seconds_per_tick)
                 if a_current_time_temp > v_time:
+                    a_reuse_event = True
                     break
                 a_current_time = a_current_time_temp
 
@@ -213,12 +155,7 @@ def main():
                             a_played_notes += 1
                             a_polyphony += 1
                             a_nps_list.append(start_time + a_current_time + 1)
-                            if event[4] < a_min_velocity:
-                                ignore_event = True
-                            # print(a_current_time)
-                            if a_max_delay:
-                                if time.perf_counter() > start_time + a_current_time + a_max_delay:
-                                    ignore_event = True
+
                             a_active_notes[event[2] & 0b1111][event[3]].append(ignore_event)
                     if event[2] >> 4 in [0x8, 0x9]:
                         if event[2] >> 4 == 0x8 or event[4] == 0:
@@ -237,9 +174,9 @@ def main():
                         a_pitch_bend[event[2] & 0b1111] = (event[3] + (event[4] << 7) - 8192) / 8192
 
                     if (not skipping or event[2] >> 4 not in [0x8, 0x9]) and not ignore_event:
+                        # print(event)
                         out.send(mido.Message.from_bytes(event[2:]))
                 a_last_tick = event[0]
-                a_index += 1
 
             try:
                 while a_nps_list[0] <= time.perf_counter():
@@ -252,14 +189,15 @@ def main():
             rl.begin_drawing()
             rl.clear_background(rl.DARKGRAY)
 
+            ev = (0, 0, 0, 0, 0)
             # --- 1. PROCESS EVENTS ---
             while True:
-                if v_index >= len(events):
+                if (ev := (ev, v_reuse_event := False)[0] if v_reuse_event else next(v_stream, None)) is None:
                     break
-                ev = events[v_index]
-                v_delta_tick = ev[0] - v_last_tick
+                v_delta_tick = ev[1] - v_last_tick
                 v_current_time_temp = v_current_time + (v_delta_tick * v_seconds_per_tick)
                 if v_current_time_temp > v_time:
+                    v_reuse_event = True
                     break
                 v_current_time = v_current_time_temp
 
@@ -268,13 +206,16 @@ def main():
                     v_seconds_per_tick = 60 / (v_bpm * ppq)
 
                 if ev[2] != "tempo" and ev[2] >> 4 in (0x8, 0x9):
-                    evi = (ev[1], ev[2] & 0b1111, ev[3]) # Track, Channel, Note
+                    evi = (ev[0], ev[2] & 0b1111, ev[3]) # Track, Channel, Note
 
                     # NOTE ON
                     if ev[2] >> 4 == 0x9 and ev[4] != 0:
                         if evi not in v_notes:
                             v_notes[evi] = deque()
                         v_notes[evi].append((v_current_time, ev[4]))
+                        if (ev[0], ev[2] & 0b1111) not in color_palette:
+                            color_palette[(ev[0], ev[2] & 0b1111)] = PFA_COLORS[v_current_color_index%16]
+                            v_current_color_index += 1
 
                     # NOTE OFF
                     else:
@@ -288,7 +229,6 @@ def main():
                                 v_falling_notes.append([evi, start_t, duration]) # Add to falling
 
                 v_last_tick = ev[0]
-                v_index += 1
 
             # --- 2. CLEANUP OLD NOTES (Optimization) ---
             # efficiently remove notes that have scrolled off the bottom
@@ -321,7 +261,7 @@ def main():
             render_queue.sort(key=lambda x: (x[1], x[0][1], x[0][0])) # (start, channel, track)
             # print(render_queue)
             v_rendered = 0
-            for evi, start, duration in render_queue[:v_max_rendered if v_max_rendered else None]:
+            for evi, start, duration in render_queue:
                 # Calculate Y position
                 # Same formula: Scale * (CurrentTime - Start - Duration)
                 x_pos = (evi[2] + a_pitch_bend[evi[1]]*a_pitch_bend_range[evi[1]]) * scale_x
@@ -357,10 +297,10 @@ def main():
             info_text: list[tuple[str, rl.Color]] = [
                 (f"Time: {"-" if v_time < 0 else ""}{abs(v_time)//60:.0f}:{abs(v_time)%60:0>5.2f}{" (Paused)" if paused else ""}", rl.WHITE),
                 (f"BPM: {a_bpm:.2f}", rl.WHITE),
-                (f"Notes: {a_played_notes:,}/{notes:,}", rl.WHITE),
+                (f"Notes: {a_played_notes:,}", rl.WHITE),
                 (f"NPS: {len(a_nps_list):,}", rl.WHITE),
                 (f"Polyphony: {a_polyphony:,}", rl.WHITE),
-                (f"Rendered: {v_rendered:,}/{v_max_rendered:,}", rl.WHITE),
+                (f"Rendered: {v_rendered:,}", rl.WHITE),
                 ("FPS: ", rl.WHITE) if v_cur_ft == 0 else
                 (f"FPS: {1/v_cur_ft:,.2f}", rl.WHITE) if v_cur_ft < 1 else
                 (f"SPF: {v_cur_ft:,.2f}", rl.RED)
