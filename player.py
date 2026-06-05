@@ -108,6 +108,8 @@ def main():
             if pr.is_key_pressed(pr.KeyboardKey.KEY_RIGHT) or pr.is_key_pressed_repeat(pr.KeyboardKey.KEY_RIGHT):
                 midi_time += 2
                 skipping = True
+            if pr.is_key_pressed(pr.KeyboardKey.KEY_END):
+                midi_time += 12345678
             if pr.is_key_pressed(pr.KeyboardKey.KEY_SPACE):
                 if paused:
                     paused = False
