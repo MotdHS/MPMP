@@ -59,6 +59,7 @@ def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], track_num: int,
     ci = 0
     previous_event_type = 0
     current_time = 0
+    active_notes = {}
     while ci < len(chunk):
         delta_time = decode_vlq(chunk[ci:ci+4])
         current_time += delta_time[0]
@@ -91,7 +92,20 @@ def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], track_num: int,
             ci += length[1] + length[0]
 
         elif event_type >> 4 in [0x8, 0x9, 0xa, 0xb, 0xe]: # note off/on, polyphonic pressure, controller, and pitch bend events
-            yield (track_num, current_time, event_type, chunk[ci], chunk[ci+1])
+            ignore_event = False
+            if event_type >> 4 == 0x9 and chunk[ci+1] != 0:
+                nid = ((event_type & 0b1111, chunk[ci])) # note identifier
+                active_notes[nid] = active_notes.get(nid, 0) + 1
+            elif event_type >> 4 == 0x8 or (event_type >> 4 == 0x9 and chunk[ci+1] == 0):
+                nid = ((event_type & 0b1111, chunk[ci])) # note identifier
+                if nid in active_notes:
+                    active_notes[nid] -= 1
+                    if not active_notes[nid]:
+                        del active_notes[nid]
+                else:
+                    ignore_event = True
+            if not ignore_event:
+                yield (track_num, current_time, event_type, chunk[ci], chunk[ci+1])
             ci += 2
 
         elif event_type >> 4 in [0xc, 0xd]: # program change/channel pressure event
