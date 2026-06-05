@@ -55,8 +55,8 @@ def main():
 
     print("Done!")
 
+    prev_time = time.perf_counter()
     with mido.open_output() as out: # type: ignore
-        start_time = time.perf_counter() + 2
         a_current_time = 0
 
         a_bpm = 120
@@ -88,9 +88,8 @@ def main():
         v_last_tick = 0
         v_notespeed = 0.15
         v_current_time = - v_notespeed
-        v_time = time.perf_counter() - start_time
-        v_paused_start = time.perf_counter()
-        v_paused_time = 0
+        midi_time = -2
+
         v_rendered = 0
         v_reuse_event = False
         v_current_color_index = 0
@@ -106,7 +105,7 @@ def main():
 
         while not rl.window_should_close() and not rl.is_key_pressed(rl.KeyboardKey.KEY_Q):
             if rl.is_key_pressed(rl.KeyboardKey.KEY_RIGHT) or rl.is_key_pressed_repeat(rl.KeyboardKey.KEY_RIGHT):
-                start_time -= 2
+                midi_time += 2
                 skipping = True
             if rl.is_key_pressed(rl.KeyboardKey.KEY_SPACE):
                 if paused:
@@ -117,22 +116,24 @@ def main():
                     for channel in range(16):
                         out.send(mido.Message.from_bytes([0xB0 + channel, 123, 0]))
 
-            if paused:
-                v_paused_time = time.perf_counter() - v_paused_start
-            else:
-                if v_paused_time:
-                    start_time += v_paused_time
-                    v_paused_time = 0
-                v_time = time.perf_counter() - start_time
-            v_cur_ft = rl.get_frame_time()
+            # if paused:
+            #     v_paused_time = time.perf_counter() - v_paused_start
+            # else:
+            #     if v_paused_time:
+            #         start_time += v_paused_time
+            #         v_paused_time = 0
+            #     midi_time = time.perf_counter() - start_time
+            delta_sec = time.perf_counter() - prev_time
+            if not paused:
+                midi_time += min(delta_sec, 0.1)
+            prev_time = time.perf_counter()
 
             if skipping:
                 for channel in range(16):
                     out.send(mido.Message.from_bytes([0xB0 + channel, 123, 0]))
-                if paused:
-                    v_time += 2
             if TYPE_CHECKING:
                 event = (0, 0, 0, 0, 0)
+            audio_start = time.perf_counter()
             while not paused or skipping: # AUDIO LOOP
                 # Before checking, decide if we need to fetch a new event or reuse the old one
                 if not a_reuse_event:
@@ -146,7 +147,7 @@ def main():
 
                 a_delta_tick = event[1] - a_last_tick
                 a_current_time_temp = a_current_time + (a_delta_tick * a_seconds_per_tick)
-                if a_current_time_temp > v_time:
+                if a_current_time_temp > midi_time:
                     a_reuse_event = True
                     break
                 a_current_time = a_current_time_temp
@@ -161,7 +162,7 @@ def main():
                         if event[4] != 0:
                             a_played_notes += 1
                             a_polyphony += 1
-                            a_nps_list.append(start_time + a_current_time + 1)
+                            a_nps_list.append(midi_time + 1)
                     if event[2] >> 4 in [0x8, 0x9]:
                         if event[2] >> 4 == 0x8 or event[4] == 0:
                             a_polyphony -= 1
@@ -180,14 +181,17 @@ def main():
                         # print(event)
                         out.send(mido.Message.from_bytes(event[2:]))
                 a_last_tick = event[1]
+            audio_dur = time.perf_counter() - audio_start
 
+            pop_start = time.perf_counter()
             try:
-                while a_nps_list[0] <= time.perf_counter():
+                while a_nps_list[0] <= midi_time:
                     a_nps_list.popleft()
             except IndexError:
                 pass
             if skipping:
                 skipping = False
+            pop_dur = time.perf_counter() - pop_start
 
             rl.begin_drawing()
             rl.clear_background(rl.DARKGRAY)
@@ -195,6 +199,7 @@ def main():
             if TYPE_CHECKING:
                 ev = (0, 0, 0, 0, 0)
             # --- 1. PROCESS EVENTS ---
+            pv_start = time.perf_counter()
             while True:
                 # Before checking, decide if we need to fetch a new event or reuse the old one
                 if not v_reuse_event:
@@ -207,7 +212,7 @@ def main():
 
                 v_delta_tick = ev[1] - v_last_tick
                 v_current_time_temp = v_current_time + (v_delta_tick * v_seconds_per_tick)
-                if v_current_time_temp > v_time:
+                if v_current_time_temp > midi_time:
                     v_reuse_event = True
                     break
                 v_current_time = v_current_time_temp
@@ -236,26 +241,30 @@ def main():
                             if not v_notes[evi]:
                                 del v_notes[evi]
 
-                            if v_current_time >= v_time - v_notespeed:
+                            if v_current_time >= midi_time - v_notespeed:
                                 v_falling_notes.append([evi, start_t, duration]) # Add to falling
 
                 v_last_tick = ev[1]
+            pv_dur = time.perf_counter() - pv_start
 
             # --- 2. CLEANUP OLD NOTES (Optimization) ---
             # efficiently remove notes that have scrolled off the bottom
             # Condition: start + duration < v_time - v_notespeed
+            clean_start = time.perf_counter()
             while len(v_falling_notes) > 0:
                 # Check the oldest note (index 0)
                 note = v_falling_notes[0]
-                if note[1] + note[2] < v_time - v_notespeed:
+                if note[1] + note[2] < midi_time - v_notespeed:
                     v_falling_notes.popleft() # Fast removal
                 else:
                     break # Since notes are roughly chronological, we can stop checking
+            clean_dur = time.perf_counter() - clean_start
 
             # --- 3. DRAW ALL NOTES (Unified) ---
             scale_y = 720 / v_notespeed
             scale_x = 1280 / 128
 
+            sort_start = time.perf_counter()
             # Merge active and falling notes for rendering
             render_queue = []
 
@@ -265,18 +274,20 @@ def main():
             # Add active notes
             for evi, note_list in v_notes.items():
                 for start, _ in note_list:
-                    duration = v_time - start
+                    duration = midi_time - start
                     render_queue.append((evi, start, duration))
 
             # Sort by start time (render older notes first, newer on top)
             render_queue.sort(key=lambda x: (x[1], x[0][1], x[0][0])) # (start, channel, track)
+            sort_dur = time.perf_counter() - sort_start
             # print(render_queue)
             v_rendered = 0
+            ren_start = time.perf_counter()
             for evi, start, duration in render_queue:
                 # Calculate Y position
                 # Same formula: Scale * (CurrentTime - Start - Duration)
                 x_pos = (evi[2] + a_pitch_bend[evi[1]]*a_pitch_bend_range[evi[1]]) * scale_x
-                y_pos = int(scale_y * (v_time - start - duration))
+                y_pos = int(scale_y * (midi_time - start - duration))
                 height = int(max(1, scale_y * duration))
 
                 note_color: tuple[int, int, int] = color_palette[evi[0:2]]
@@ -304,17 +315,26 @@ def main():
                     rl.Color(int(note_color[0]/1.75), int(note_color[1]/1.75), int(note_color[2]/1.75), 255)
                 )
                 v_rendered += 1
+            ren_dur = time.perf_counter() - ren_start
 
             info_text: list[tuple[str, rl.Color]] = [
-                (f"Time: {"-" if v_time < 0 else ""}{abs(v_time)//60:.0f}:{abs(v_time)%60:0>5.2f}{" (Paused)" if paused else ""}", rl.WHITE),
+                (f"Time: {"-" if midi_time < 0 else ""}{abs(midi_time)//60:.0f}:{abs(midi_time)%60:0>5.2f}{" (Paused)" if paused else ""}", rl.WHITE),
                 (f"BPM: {a_bpm:.2f}", rl.WHITE),
                 (f"Notes: {a_played_notes:,}", rl.WHITE),
                 (f"NPS: {len(a_nps_list):,}", rl.WHITE),
                 (f"Polyphony: {a_polyphony:,}", rl.WHITE),
                 (f"Rendered: {v_rendered:,}", rl.WHITE),
-                ("FPS: ", rl.WHITE) if v_cur_ft == 0 else
-                (f"FPS: {1/v_cur_ft:,.2f}", rl.WHITE) if v_cur_ft < 1 else
-                (f"SPF: {v_cur_ft:,.2f}", rl.RED)
+                ("FPS: ", rl.WHITE) if delta_sec == 0 else
+                (f"FPS: {1/delta_sec:,.2f}", rl.WHITE) if delta_sec < 1 else
+                (f"SPF: {delta_sec:,.2f}", rl.RED),
+                (f"Time to audio: {audio_dur:,.4f}", rl.YELLOW),
+                (f"Time to pop: {pop_dur:,.4f}", rl.YELLOW),
+                (f"Time to pv: {pv_dur:,.4f}", rl.YELLOW),
+                (f"Time to clean: {clean_dur:,.4f}", rl.YELLOW),
+                (f"Time to sort: {sort_dur:,.4f}", rl.YELLOW),
+                (f"Time to render: {ren_dur:,.4f}", rl.YELLOW),
+                (f"Total: {audio_dur+pop_dur+pv_dur+clean_dur+sort_dur+ren_dur:,.4f}", rl.YELLOW),
+                (f"Previous delta time: {delta_sec:,.4f}", rl.YELLOW),
             ]
 
             info_length = max([rl.measure_text(x, 20) for x, _ in info_text])
@@ -333,9 +353,9 @@ def main():
 
             if a_finished:
                 if not a_finished_time:
-                    a_finished_time = time.perf_counter() - start_time
-                finished_text_width = rl.measure_text(f"Playback Finished in {a_finished_time:.3f}!", 20)
-                rl.draw_text(f"Playback Finished in {a_finished_time:.3f}!", 1280 - finished_text_width - 10, 10, 20, rl.GREEN)
+                    a_finished_time = midi_time
+                finished_text_width = rl.measure_text(f"Playback Finished!", 20)
+                rl.draw_text(f"Playback Finished!", 1280 - finished_text_width - 10, 10, 20, rl.GREEN)
             rl.end_drawing()
 
         rl.close_window()
