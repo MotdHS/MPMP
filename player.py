@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING
 import mido
 import mparser
 import midistream
-import pyray as rl
+import pyray as pr
+import raylib as rl
 from tkinter import filedialog
 from collections import deque
 
@@ -51,7 +52,7 @@ def main():
     mido.set_backend("kdmapi.mido_backend")
 
     ppq = midi["ppq"]
-    color_palette: dict[tuple[int, int], tuple[int, int, int]] = {}
+    color_palette: dict[int, tuple[tuple[int, int, int, int], tuple[int, int, int, int]]] = {}
 
     print("Done!")
 
@@ -100,14 +101,14 @@ def main():
         skipping = False
         paused = True
 
-        rl.init_window(1280, 720, f"MotdHS's Python MIDI Player Rewritten {VERSION}")
-        # rl.set_target_fps(165)
+        pr.init_window(1280, 720, f"MotdHS's Python MIDI Player Rewritten {VERSION}")
+        # pr.set_target_fps(165)
 
-        while not rl.window_should_close() and not rl.is_key_pressed(rl.KeyboardKey.KEY_Q):
-            if rl.is_key_pressed(rl.KeyboardKey.KEY_RIGHT) or rl.is_key_pressed_repeat(rl.KeyboardKey.KEY_RIGHT):
+        while not pr.window_should_close() and not pr.is_key_pressed(pr.KeyboardKey.KEY_Q):
+            if pr.is_key_pressed(pr.KeyboardKey.KEY_RIGHT) or pr.is_key_pressed_repeat(pr.KeyboardKey.KEY_RIGHT):
                 midi_time += 2
                 skipping = True
-            if rl.is_key_pressed(rl.KeyboardKey.KEY_SPACE):
+            if pr.is_key_pressed(pr.KeyboardKey.KEY_SPACE):
                 if paused:
                     paused = False
                 else:
@@ -193,8 +194,8 @@ def main():
                 skipping = False
             pop_dur = time.perf_counter() - pop_start
 
-            rl.begin_drawing()
-            rl.clear_background(rl.DARKGRAY)
+            rl.BeginDrawing()
+            rl.ClearBackground(rl.DARKGRAY)
 
             if TYPE_CHECKING:
                 ev = (0, 0, 0, 0, 0)
@@ -222,27 +223,35 @@ def main():
                     v_seconds_per_tick = 60 / (v_bpm * ppq)
 
                 if ev[2] != "tempo" and ev[2] >> 4 in (0x8, 0x9):
-                    evi = (ev[0], ev[2] & 0b1111, ev[3]) # Track, Channel, Note
+                    tr = ev[0]
+                    ch = ev[2] & 0b1111
+                    no = ev[3]
+                    note_key = (tr << 16) | (ch << 8) | no
 
                     # NOTE ON
                     if ev[2] >> 4 == 0x9 and ev[4] != 0:
-                        if evi not in v_notes:
-                            v_notes[evi] = deque()
-                        v_notes[evi].append((v_current_time, ev[4]))
-                        if (ev[0], ev[2] & 0b1111) not in color_palette:
-                            color_palette[(ev[0], ev[2] & 0b1111)] = PFA_COLORS[v_current_color_index%16]
+                        if note_key not in v_notes:
+                            v_notes[note_key] = deque()
+                        v_notes[note_key].append((v_current_time, ev[4]))
+                        color_key = (tr << 8) | ch
+                        if color_key not in color_palette:
+                            fill_rgb = PFA_COLORS[v_current_color_index % 16]
+                            color_palette[color_key] = (
+                                (fill_rgb[0], fill_rgb[1], fill_rgb[2], 255),
+                                (int(fill_rgb[0]/1.75), int(fill_rgb[1]/1.75), int(fill_rgb[2]/1.75), 255),
+                            )
                             v_current_color_index += 1
 
                     # NOTE OFF
                     else:
-                        if evi in v_notes and v_notes[evi]:
-                            start_t, _ = v_notes[evi].popleft() # Remove from active (FIFO)
+                        if note_key in v_notes and v_notes[note_key]:
+                            start_t, _ = v_notes[note_key].popleft()
                             duration = v_current_time - start_t
-                            if not v_notes[evi]:
-                                del v_notes[evi]
+                            if not v_notes[note_key]:
+                                del v_notes[note_key]
 
                             if v_current_time >= midi_time - v_notespeed:
-                                v_falling_notes.append([evi, start_t, duration]) # Add to falling
+                                v_falling_notes.append((start_t, ch, tr, no, duration))
 
                 v_last_tick = ev[1]
             pv_dur = time.perf_counter() - pv_start
@@ -251,13 +260,12 @@ def main():
             # efficiently remove notes that have scrolled off the bottom
             # Condition: start + duration < v_time - v_notespeed
             clean_start = time.perf_counter()
-            while len(v_falling_notes) > 0:
-                # Check the oldest note (index 0)
+            while v_falling_notes:
                 note = v_falling_notes[0]
-                if note[1] + note[2] < midi_time - v_notespeed:
-                    v_falling_notes.popleft() # Fast removal
+                if note[0] + note[4] < midi_time - v_notespeed:
+                    v_falling_notes.popleft()
                 else:
-                    break # Since notes are roughly chronological, we can stop checking
+                    break
             clean_dur = time.perf_counter() - clean_start
 
             # --- 3. DRAW ALL NOTES (Unified) ---
@@ -265,100 +273,96 @@ def main():
             scale_x = 1280 / 128
 
             sort_start = time.perf_counter()
-            # Merge active and falling notes for rendering
             render_queue = []
 
-            # Add falling notes
             render_queue.extend(v_falling_notes)
 
-            # Add active notes
-            for evi, note_list in v_notes.items():
+            for note_key, note_list in v_notes.items():
+                tr = note_key >> 16
+                ch = (note_key >> 8) & 0xFF
+                no = note_key & 0xFF
                 for start, _ in note_list:
                     duration = midi_time - start
-                    render_queue.append((evi, start, duration))
+                    render_queue.append((start, ch, tr, no, duration))
 
-            # Sort by start time (render older notes first, newer on top)
-            render_queue.sort(key=lambda x: (x[1], x[0][1], x[0][0])) # (start, channel, track)
+            render_queue.sort()
             sort_dur = time.perf_counter() - sort_start
-            # print(render_queue)
             v_rendered = 0
             ren_start = time.perf_counter()
-            for evi, start, duration in render_queue:
-                # Calculate Y position
-                # Same formula: Scale * (CurrentTime - Start - Duration)
-                x_pos = (evi[2] + a_pitch_bend[evi[1]]*a_pitch_bend_range[evi[1]]) * scale_x
+            for start, ch, tr, no, duration in render_queue:
+                x_pos = (no + a_pitch_bend[ch]*a_pitch_bend_range[ch]) * scale_x
                 y_pos = int(scale_y * (midi_time - start - duration))
                 height = int(max(1, scale_y * duration))
 
-                note_color: tuple[int, int, int] = color_palette[evi[0:2]]
+                fill_color, outline_color = color_palette[(tr << 8) | ch]
 
-                rl.draw_rectangle(
+                rl.DrawRectangle(
                     int(x_pos),
                     y_pos,
                     int(scale_x),
                     height,
-                    rl.Color(note_color[0], note_color[1], note_color[2], 255)
+                    fill_color
                 )
-                # rl.draw_rectangle_gradient_h(
+                # pr.draw_rectangle_gradient_h(
                 #     int(evi[2] * scale_x),
                 #     int(y_pos),
                 #     10,
                 #     int(max(1, height)),
-                #     rl.Color(*note_color, 255),
-                #     rl.Color(*(int(x/1.75) for x in note_color), 255),
+                #     pr.Color(*note_color, 255),
+                #     pr.Color(*(int(x/1.75) for x in note_color), 255),
                 # )
-                rl.draw_rectangle_lines(
+                rl.DrawRectangleLines(
                     int(x_pos),
                     y_pos,
                     int(scale_x),
                     height,
-                    rl.Color(int(note_color[0]/1.75), int(note_color[1]/1.75), int(note_color[2]/1.75), 255)
+                    outline_color
                 )
                 v_rendered += 1
             ren_dur = time.perf_counter() - ren_start
 
-            info_text: list[tuple[str, rl.Color]] = [
-                (f"Time: {"-" if midi_time < 0 else ""}{abs(midi_time)//60:.0f}:{abs(midi_time)%60:0>5.2f}{" (Paused)" if paused else ""}", rl.WHITE),
-                (f"BPM: {a_bpm:.2f}", rl.WHITE),
-                (f"Notes: {a_played_notes:,}", rl.WHITE),
-                (f"NPS: {len(a_nps_list):,}", rl.WHITE),
-                (f"Polyphony: {a_polyphony:,}", rl.WHITE),
-                (f"Rendered: {v_rendered:,}", rl.WHITE),
-                ("FPS: ", rl.WHITE) if delta_sec == 0 else
-                (f"FPS: {1/delta_sec:,.2f}", rl.WHITE) if delta_sec < 1 else
-                (f"SPF: {delta_sec:,.2f}", rl.RED),
-                (f"Time to audio: {audio_dur:,.4f}", rl.YELLOW),
-                (f"Time to pop: {pop_dur:,.4f}", rl.YELLOW),
-                (f"Time to pv: {pv_dur:,.4f}", rl.YELLOW),
-                (f"Time to clean: {clean_dur:,.4f}", rl.YELLOW),
-                (f"Time to sort: {sort_dur:,.4f}", rl.YELLOW),
-                (f"Time to render: {ren_dur:,.4f}", rl.YELLOW),
-                (f"Total: {audio_dur+pop_dur+pv_dur+clean_dur+sort_dur+ren_dur:,.4f}", rl.YELLOW),
-                (f"Previous delta time: {delta_sec:,.4f}", rl.YELLOW),
+            info_text: list[tuple[str, pr.Color]] = [
+                (f"Time: {"-" if midi_time < 0 else ""}{abs(midi_time)//60:.0f}:{abs(midi_time)%60:0>5.2f}{" (Paused)" if paused else ""}", pr.WHITE),
+                (f"BPM: {a_bpm:.2f}", pr.WHITE),
+                (f"Notes: {a_played_notes:,}", pr.WHITE),
+                (f"NPS: {len(a_nps_list):,}", pr.WHITE),
+                (f"Polyphony: {a_polyphony:,}", pr.WHITE),
+                (f"Rendered: {v_rendered:,}", pr.WHITE),
+                ("FPS: ", pr.WHITE) if delta_sec == 0 else
+                (f"FPS: {1/delta_sec:,.2f}", pr.WHITE) if delta_sec < 1 else
+                (f"SPF: {delta_sec:,.2f}", pr.RED),
+                (f"Time to audio: {audio_dur:,.4f}", pr.YELLOW),
+                (f"Time to pop: {pop_dur:,.4f}", pr.YELLOW),
+                (f"Time to pv: {pv_dur:,.4f}", pr.YELLOW),
+                (f"Time to clean: {clean_dur:,.4f}", pr.YELLOW),
+                (f"Time to sort: {sort_dur:,.4f}", pr.YELLOW),
+                (f"Time to render: {ren_dur:,.4f}", pr.YELLOW),
+                (f"Total: {audio_dur+pop_dur+pv_dur+clean_dur+sort_dur+ren_dur:,.4f}", pr.YELLOW),
+                (f"Previous delta time: {delta_sec:,.4f}", pr.YELLOW),
             ]
 
-            info_length = max([rl.measure_text(x, 20) for x, _ in info_text])
+            info_length = max([pr.measure_text(x, 20) for x, _ in info_text])
 
-            rl.draw_rectangle(
+            rl.DrawRectangle(
                 0,
                 0,
                 info_length + 20,
                 len(info_text)*22 + 20,
-                rl.Color(0, 0, 0, 127)
+                (0, 0, 0, 127)
             )
 
             for i, (text, tcolor) in enumerate(info_text):
-                rl.draw_text(text, 10, 10 + 22*i, 20, tcolor)
+                pr.draw_text(text, 10, 10 + 22*i, 20, tcolor)
 
 
             if a_finished:
                 if not a_finished_time:
                     a_finished_time = midi_time
-                finished_text_width = rl.measure_text(f"Playback Finished!", 20)
-                rl.draw_text(f"Playback Finished!", 1280 - finished_text_width - 10, 10, 20, rl.GREEN)
-            rl.end_drawing()
+                finished_text_width = pr.measure_text(f"Playback Finished!", 20)
+                pr.draw_text(f"Playback Finished!", 1280 - finished_text_width - 10, 10, 20, pr.GREEN)
+            rl.EndDrawing()
 
-        rl.close_window()
+        pr.close_window()
 
 if __name__ == "__main__":
     main()
