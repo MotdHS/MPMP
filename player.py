@@ -1,6 +1,7 @@
 # pyright: standard
 from pathlib import Path
 import time
+from typing import TYPE_CHECKING
 import mido
 import mparser
 import midistream
@@ -81,7 +82,6 @@ def main():
             a_pitch_bend.append(0.0)
             a_pitch_bend_range.append(2)
             a_rpn.append([0x7f, 0x7f])
-        a_active_notes = [[deque() for _ in range(128)] for _2 in range(16)]
 
         v_bpm = 120
         v_seconds_per_tick = 60 / (v_bpm * ppq)
@@ -131,13 +131,20 @@ def main():
                     out.send(mido.Message.from_bytes([0xB0 + channel, 123, 0]))
                 if paused:
                     v_time += 2
-            event = (0, 0, 0, 0, 0)
+            if TYPE_CHECKING:
+                event = (0, 0, 0, 0, 0)
             while not paused or skipping: # AUDIO LOOP
-                if (event := (event, a_reuse_event := False)[0] if a_reuse_event else next(a_stream, None)) is None:
+                # Before checking, decide if we need to fetch a new event or reuse the old one
+                if not a_reuse_event:
+                    event = next(a_stream, None)
+                else:
+                    a_reuse_event = False  # Reset the flag since we just reused it
+
+                if event is None:
                     a_finished = True
                     break
-                ignore_event = False
-                a_delta_tick = event[0] - a_last_tick
+
+                a_delta_tick = event[1] - a_last_tick
                 a_current_time_temp = a_current_time + (a_delta_tick * a_seconds_per_tick)
                 if a_current_time_temp > v_time:
                     a_reuse_event = True
@@ -155,13 +162,9 @@ def main():
                             a_played_notes += 1
                             a_polyphony += 1
                             a_nps_list.append(start_time + a_current_time + 1)
-
-                            a_active_notes[event[2] & 0b1111][event[3]].append(ignore_event)
                     if event[2] >> 4 in [0x8, 0x9]:
                         if event[2] >> 4 == 0x8 or event[4] == 0:
                             a_polyphony -= 1
-                            if a_active_notes:
-                                ignore_event = a_active_notes[event[2] & 0b1111][event[3]].popleft()
                     if event[2] >> 4 == 0xb: #controller, here i'll only use it for pitch bend range
                         if event[3] == 0x64:
                             a_rpn[event[2] & 0b1111][0] = event[4]
@@ -173,10 +176,10 @@ def main():
                     if event[2] >> 4 == 0xe: #pitch bend
                         a_pitch_bend[event[2] & 0b1111] = (event[3] + (event[4] << 7) - 8192) / 8192
 
-                    if (not skipping or event[2] >> 4 not in [0x8, 0x9]) and not ignore_event:
+                    if (not skipping or event[2] >> 4 not in [0x8, 0x9]) and event is not None:
                         # print(event)
                         out.send(mido.Message.from_bytes(event[2:]))
-                a_last_tick = event[0]
+                a_last_tick = event[1]
 
             try:
                 while a_nps_list[0] <= time.perf_counter():
@@ -228,7 +231,7 @@ def main():
                             if v_current_time >= v_time - v_notespeed:
                                 v_falling_notes.append([evi, start_t, duration]) # Add to falling
 
-                v_last_tick = ev[0]
+                v_last_tick = ev[1]
 
             # --- 2. CLEANUP OLD NOTES (Optimization) ---
             # efficiently remove notes that have scrolled off the bottom

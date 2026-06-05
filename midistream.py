@@ -82,7 +82,7 @@ def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], track_num: int,
                     tempo_us <<= 8
                     tempo_us += i
                 tempo = 60_000_000.0/float(tempo_us)
-                yield (track_num, current_time, "tempo", tempo, None)
+                yield (track_num, current_time, "tempo", tempo)
                 ci += length[0]
             else:
                 ci += length[0]
@@ -95,10 +95,11 @@ def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], track_num: int,
             ci += 2
 
         elif event_type >> 4 in [0xc, 0xd]: # program change/channel pressure event
-            yield (track_num, current_time, event_type, chunk[ci], None)
+            yield (track_num, current_time, event_type, chunk[ci])
             ci += 1
 
-        previous_event_type = event_type
+        if event_type < 0xF0:
+            previous_event_type = event_type
 
 def midi_stream(file: Path, verbose=False):
     if verbose:
