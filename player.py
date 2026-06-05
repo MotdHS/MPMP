@@ -43,7 +43,7 @@ def main():
     # midi = mparser.load_midi(file_path, verbose=True)
     a_stream = midistream.midi_stream(Path(file_path), verbose=True)
     v_stream = midistream.midi_stream(Path(file_path), verbose=True)
-    p_stream = midistream.midi_stream(Path(file_path), verbose=True)
+    # p_stream = midistream.midi_stream(Path(file_path), verbose=True)
     load_end = time.perf_counter()
     print(f"Took {load_end - load_start:.5f} seconds")
     midi: midistream.MIDIData = midistream.get_midi_data(Path(file_path), verbose=True)
@@ -192,11 +192,19 @@ def main():
             rl.begin_drawing()
             rl.clear_background(rl.DARKGRAY)
 
-            ev = (0, 0, 0, 0, 0)
+            if TYPE_CHECKING:
+                ev = (0, 0, 0, 0, 0)
             # --- 1. PROCESS EVENTS ---
             while True:
-                if (ev := (ev, v_reuse_event := False)[0] if v_reuse_event else next(v_stream, None)) is None:
+                # Before checking, decide if we need to fetch a new event or reuse the old one
+                if not v_reuse_event:
+                    ev = next(v_stream, None)
+                else:
+                    v_reuse_event = False  # Reset the flag since we just reused it
+
+                if ev is None:
                     break
+
                 v_delta_tick = ev[1] - v_last_tick
                 v_current_time_temp = v_current_time + (v_delta_tick * v_seconds_per_tick)
                 if v_current_time_temp > v_time:
