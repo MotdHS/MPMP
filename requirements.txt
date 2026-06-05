@@ -2,3 +2,4 @@ mido
 kdmapi
 raylib
 setuptools
+cffi
