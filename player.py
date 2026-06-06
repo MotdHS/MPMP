@@ -3,7 +3,7 @@ from pathlib import Path
 import time
 from typing import TYPE_CHECKING
 import mido
-import mparser
+import math
 import midistream
 import pyray as pr
 import raylib as rl
@@ -11,6 +11,9 @@ from tkinter import filedialog
 from collections import deque
 
 VERSION = "v1_dev"
+
+DEBUG = False
+MAX_DELTA = 0
 
 PFA_COLORS = [
     (51, 102, 255),
@@ -35,6 +38,13 @@ IS_SHARP: list[bool] = [False, True, False, True, False, False, True, False, Tru
 
 WHITE_NOTE: tuple[bool, tuple[int, int, int, int]] = (False, (255, 255, 255, 255))
 BLACK_NOTE: tuple[bool, tuple[int, int, int, int]] = (False, (0, 0, 0, 255))
+
+def align_rectangle(rect: tuple) -> tuple:
+    left = math.floor(rect[0] + 0.5)
+    top = math.floor(rect[1] + 0.5)
+    right = math.floor(rect[0] + rect[2] + 0.5)
+    bottom = math.floor(rect[1] + rect[3] + 0.5)
+    return (left, top, right - left, bottom - top)
 
 def file_dialog():
     return filedialog.askopenfilename(filetypes=(
@@ -91,14 +101,14 @@ def main():
             a_pitch_bend.append(0.0)
             a_pitch_bend_range.append(2)
             a_rpn.append([0x7f, 0x7f])
-        a_active_notes = [[[deque() for _ in range(128)] for _2 in range(16)] for _3 in range(len(midi["track_indices"]))]
+        a_key_color_stack: list[list] = [[] for _ in range(128)]
 
         key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
 
         v_bpm = 120
         v_seconds_per_tick = 60 / (v_bpm * ppq)
         v_last_tick = 0
-        v_notespeed = 0.5
+        v_notespeed = 0.15
         v_current_time = - v_notespeed
         midi_time = -2
 
@@ -106,7 +116,7 @@ def main():
         v_reuse_event = False
         current_color_index = 0
 
-        v_keyboard_height = 100
+        v_keyboard_height = 60
 
         v_notes = {}            # Only stores ACTIVE notes
         v_falling_notes = deque() # Stores FINISHED notes (rendering only)
@@ -141,7 +151,7 @@ def main():
             #     midi_time = time.perf_counter() - start_time
             delta_sec = time.perf_counter() - prev_time
             if not paused:
-                midi_time += min(delta_sec, 0.1)
+                midi_time += min(delta_sec, MAX_DELTA) if MAX_DELTA else delta_sec
             prev_time = time.perf_counter()
 
             if skipping:
@@ -182,7 +192,7 @@ def main():
                             a_played_notes += 1
                             a_polyphony += 1
                             a_nps_list.append(midi_time + 1)
-                            color_key = (event[0] << 8) | (event[2] % 0b1111)
+                            color_key = (event[0] << 8) | (event[2] & 0b1111)
                             if color_key not in color_palette:
                                 fill_rgb = PFA_COLORS[current_color_index % 16]
                                 color_palette[color_key] = (
@@ -190,12 +200,16 @@ def main():
                                     (int(fill_rgb[0]/1.75), int(fill_rgb[1]/1.75), int(fill_rgb[2]/1.75), 255),
                                 )
                                 current_color_index += 1
-                            a_active_notes[event[3]].append(color_palette[color_key][0])
+                            a_key_color_stack[event[3]].append(color_key)
                     if event[2] >> 4 in [0x8, 0x9]:
                         if event[2] >> 4 == 0x8 or event[4] == 0:
                             a_polyphony -= 1
-                            if a_active_notes:
-                                a_active_notes[event[3]].popleft()
+                            stack = a_key_color_stack[event[3]]
+                            color_key = (event[0] << 8) | (event[2] & 0b1111)
+                            for i in range(len(stack) - 1, -1, -1):
+                                if stack[i] == color_key:
+                                    stack.pop(i)
+                                    break
                     if event[2] >> 4 == 0xb: #controller, here i'll only use it for pitch bend range
                         if event[3] == 0x64:
                             a_rpn[event[2] & 0b1111][0] = event[4]
@@ -212,6 +226,10 @@ def main():
                         out.send(mido.Message.from_bytes(event[2:]))
                 a_last_tick = event[1]
             audio_dur = time.perf_counter() - audio_start
+
+            for note in range(128):
+                if a_key_color_stack[note]:
+                    key_colors[note] = (True, color_palette[a_key_color_stack[note][-1]][0])
 
             pop_start = time.perf_counter()
             try:
@@ -320,16 +338,18 @@ def main():
             ren_start = time.perf_counter()
             for start, ch, tr, no, duration in render_queue:
                 x_pos = (no + a_pitch_bend[ch]*a_pitch_bend_range[ch]) * scale_x
-                y_pos = int(scale_y * (midi_time - start - duration))
-                height = int(max(1, scale_y * duration))
+                y_pos = scale_y * (midi_time - start - duration)
+                height = max(1, scale_y * duration)
 
                 fill_color, outline_color = color_palette[(tr << 8) | ch]
 
-                rl.DrawRectangle(
-                    int(x_pos),
-                    y_pos,
-                    int(scale_x),
-                    height,
+                rl.DrawRectangleRec(
+                    align_rectangle((
+                        x_pos,
+                        y_pos,
+                        scale_x,
+                        height
+                    )),
                     fill_color
                 )
                 # pr.draw_rectangle_gradient_h(
@@ -340,11 +360,14 @@ def main():
                 #     pr.Color(*note_color, 255),
                 #     pr.Color(*(int(x/1.75) for x in note_color), 255),
                 # )
-                rl.DrawRectangleLines(
-                    int(x_pos),
-                    y_pos,
-                    int(scale_x),
-                    height,
+                rl.DrawRectangleLinesEx(
+                    align_rectangle((
+                        x_pos,
+                        y_pos,
+                        scale_x,
+                        height
+                    )),
+                    1,
                     outline_color
                 )
                 v_rendered += 1
@@ -369,15 +392,18 @@ def main():
                 ("FPS: ", pr.WHITE) if delta_sec == 0 else
                 (f"FPS: {1/delta_sec:,.2f}", pr.WHITE) if delta_sec < 1 else
                 (f"SPF: {delta_sec:,.2f}", pr.RED),
-                (f"Time to audio: {audio_dur:,.4f}", pr.YELLOW),
-                (f"Time to pop: {pop_dur:,.4f}", pr.YELLOW),
-                (f"Time to pv: {pv_dur:,.4f}", pr.YELLOW),
-                (f"Time to clean: {clean_dur:,.4f}", pr.YELLOW),
-                (f"Time to sort: {sort_dur:,.4f}", pr.YELLOW),
-                (f"Time to render: {ren_dur:,.4f}", pr.YELLOW),
-                (f"Total: {audio_dur+pop_dur+pv_dur+clean_dur+sort_dur+ren_dur:,.4f}", pr.YELLOW),
-                (f"Previous delta time: {delta_sec:,.4f}", pr.YELLOW),
             ]
+            if DEBUG:
+                info_text.extend([
+                    (f"Time to audio: {audio_dur:,.4f}", pr.YELLOW),
+                    (f"Time to pop: {pop_dur:,.4f}", pr.YELLOW),
+                    (f"Time to pv: {pv_dur:,.4f}", pr.YELLOW),
+                    (f"Time to clean: {clean_dur:,.4f}", pr.YELLOW),
+                    (f"Time to sort: {sort_dur:,.4f}", pr.YELLOW),
+                    (f"Time to render: {ren_dur:,.4f}", pr.YELLOW),
+                    (f"Total: {audio_dur+pop_dur+pv_dur+clean_dur+sort_dur+ren_dur:,.4f}", pr.YELLOW),
+                    (f"Previous delta time: {delta_sec:,.4f}", pr.YELLOW),
+                ])
 
             info_length = max([pr.measure_text(x, 20) for x, _ in info_text])
 
