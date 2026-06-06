@@ -12,12 +12,6 @@ from collections import deque
 
 VERSION = "v1_dev"
 
-def file_dialog():
-    return filedialog.askopenfilename(filetypes=(
-        ("MIDI Files", "*.mid"),
-        ("Karaoke Files (?)", "*.kar"),
-    ))
-
 PFA_COLORS = [
     (51, 102, 255),
     (255, 126, 51),
@@ -37,14 +31,28 @@ PFA_COLORS = [
     (231, 255, 51)
 ]
 
+IS_SHARP: list[bool] = [False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False, True, False, True, False, False, True, False, True, False, False, True, False]
+
+WHITE_NOTE: tuple[bool, tuple[int, int, int, int]] = (False, (255, 255, 255, 255))
+BLACK_NOTE: tuple[bool, tuple[int, int, int, int]] = (False, (0, 0, 0, 255))
+
+def file_dialog():
+    return filedialog.askopenfilename(filetypes=(
+        ("MIDI Files", "*.mid"),
+        ("Karaoke Files (?)", "*.kar"),
+    ))
+
 def main():
     file_path = file_dialog()
-    print("Loading MIDI...")
+    print("Initializing MIDI...")
     load_start = time.perf_counter()
     # midi = mparser.load_midi(file_path, verbose=True)
     a_stream = midistream.midi_stream(Path(file_path), verbose=True)
     v_stream = midistream.midi_stream(Path(file_path), verbose=True)
     # p_stream = midistream.midi_stream(Path(file_path), verbose=True)
+    next(a_stream)
+    next(v_stream)
+    # next(p_stream)
     load_end = time.perf_counter()
     print(f"Took {load_end - load_start:.5f} seconds")
     midi: midistream.MIDIData = midistream.get_midi_data(Path(file_path), verbose=True)
@@ -83,17 +91,22 @@ def main():
             a_pitch_bend.append(0.0)
             a_pitch_bend_range.append(2)
             a_rpn.append([0x7f, 0x7f])
+        a_active_notes = [[[deque() for _ in range(128)] for _2 in range(16)] for _3 in range(len(midi["track_indices"]))]
+
+        key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
 
         v_bpm = 120
         v_seconds_per_tick = 60 / (v_bpm * ppq)
         v_last_tick = 0
-        v_notespeed = 0.15
+        v_notespeed = 0.5
         v_current_time = - v_notespeed
         midi_time = -2
 
         v_rendered = 0
         v_reuse_event = False
-        v_current_color_index = 0
+        current_color_index = 0
+
+        v_keyboard_height = 100
 
         v_notes = {}            # Only stores ACTIVE notes
         v_falling_notes = deque() # Stores FINISHED notes (rendering only)
@@ -137,7 +150,10 @@ def main():
             if TYPE_CHECKING:
                 event = (0, 0, 0, 0, 0)
             audio_start = time.perf_counter()
+            key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
+            a_index = -1
             while not paused or skipping: # AUDIO LOOP
+                a_index += 1
                 # Before checking, decide if we need to fetch a new event or reuse the old one
                 if not a_reuse_event:
                     event = next(a_stream, None)
@@ -166,9 +182,20 @@ def main():
                             a_played_notes += 1
                             a_polyphony += 1
                             a_nps_list.append(midi_time + 1)
+                            color_key = (event[0] << 8) | (event[2] % 0b1111)
+                            if color_key not in color_palette:
+                                fill_rgb = PFA_COLORS[current_color_index % 16]
+                                color_palette[color_key] = (
+                                    (fill_rgb[0], fill_rgb[1], fill_rgb[2], 255),
+                                    (int(fill_rgb[0]/1.75), int(fill_rgb[1]/1.75), int(fill_rgb[2]/1.75), 255),
+                                )
+                                current_color_index += 1
+                            a_active_notes[event[3]].append(color_palette[color_key][0])
                     if event[2] >> 4 in [0x8, 0x9]:
                         if event[2] >> 4 == 0x8 or event[4] == 0:
                             a_polyphony -= 1
+                            if a_active_notes:
+                                a_active_notes[event[3]].popleft()
                     if event[2] >> 4 == 0xb: #controller, here i'll only use it for pitch bend range
                         if event[3] == 0x64:
                             a_rpn[event[2] & 0b1111][0] = event[4]
@@ -237,12 +264,12 @@ def main():
                         v_notes[note_key].append((v_current_time, ev[4]))
                         color_key = (tr << 8) | ch
                         if color_key not in color_palette:
-                            fill_rgb = PFA_COLORS[v_current_color_index % 16]
+                            fill_rgb = PFA_COLORS[current_color_index % 16]
                             color_palette[color_key] = (
                                 (fill_rgb[0], fill_rgb[1], fill_rgb[2], 255),
                                 (int(fill_rgb[0]/1.75), int(fill_rgb[1]/1.75), int(fill_rgb[2]/1.75), 255),
                             )
-                            v_current_color_index += 1
+                            current_color_index += 1
 
                     # NOTE OFF
                     else:
@@ -271,8 +298,8 @@ def main():
             clean_dur = time.perf_counter() - clean_start
 
             # --- 3. DRAW ALL NOTES (Unified) ---
-            scale_y = 720 / v_notespeed
-            scale_x = 1280 / 128
+            scale_y = (720 - v_keyboard_height) / v_notespeed
+            scale_x = (1280) / 128
 
             sort_start = time.perf_counter()
             render_queue = []
@@ -321,6 +348,15 @@ def main():
                     outline_color
                 )
                 v_rendered += 1
+
+            for key in range(128):
+                rl.DrawRectangle(
+                    int(scale_x * key),
+                    720 - v_keyboard_height,
+                    int(scale_x),
+                    v_keyboard_height,
+                    key_colors[key][1]
+                )
             ren_dur = time.perf_counter() - ren_start
 
             info_text: list[tuple[str, pr.Color]] = [

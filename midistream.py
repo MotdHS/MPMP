@@ -125,6 +125,7 @@ def midi_stream(file: Path, verbose=False):
             for i, track_index in enumerate(midi_data["track_indices"]):
                 track_generators.append(parse_track(m, track_index, i, verbose))
             merged_stream = heapq.merge(*track_generators, key=lambda event: event[1])
+            yield None
             for event in merged_stream:
                 yield event
 
