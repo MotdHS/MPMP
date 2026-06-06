@@ -1,7 +1,7 @@
 # pyright: standard
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import mido
 import math
 import midistream
@@ -13,8 +13,8 @@ from collections import deque
 VERSION = "v1_dev"
 
 MAX_DELTA = 0.25
-WIDTH = 640
-HEIGHT = 360
+WIDTH = 1280
+HEIGHT = 720
 
 DEBUG = False
 MIN_DELTA = 0
@@ -43,6 +43,34 @@ IS_SHARP: list[bool] = [False, True, False, True, False, False, True, False, Tru
 WHITE_NOTE: tuple[bool, tuple[int, int, int, int]] = (False, (255, 255, 255, 255))
 BLACK_NOTE: tuple[bool, tuple[int, int, int, int]] = (False, (0, 0, 0, 255))
 
+SHARP_RATIO = 0.65
+KB_PERCENT = 0.25
+KEY_RATIO = 0.1775
+
+def multiply_color(color: tuple[int, int, int, int], mul):
+    tempus = []
+    for i in color[0:3]:
+        curlor = int(i*mul)
+        if curlor > 255:
+            curlor = 255
+        tempus.append(curlor)
+    tempus.append(color[3])
+    return tuple(tempus)
+
+def DrawRectangleRecGradientH(rect: tuple[Any, Any, Any, Any], left: tuple[Any, Any, Any, Any], right: tuple[Any, Any, Any, Any]):
+    rl.DrawRectangleGradientEx(rect, left, left, right, right)
+
+def DrawRectangleRecGradientV(rect: tuple[Any, Any, Any, Any], top: tuple[Any, Any, Any, Any], bottom: tuple[Any, Any, Any, Any]):
+    rl.DrawRectangleGradientEx(rect, top, bottom, bottom, top)
+
+def DrawSkew(p1: tuple[Any, Any], p2: tuple[Any, Any], p3: tuple[Any, Any], p4: tuple[Any, Any], c1: tuple[Any, Any, Any, Any], c2: tuple[Any, Any, Any, Any] | None = None, c3: tuple[Any, Any, Any, Any] | None = None, c4: tuple[Any, Any, Any, Any] | None = None):
+    if c2 is None and c3 is None and c4 is None:
+        c2 = c3 = c4 = c1
+    if c2 is None or c3 is None or c4 is None:
+        raise ValueError("idk if this is the correct exception to raise but whatever idfk basically you should either provide one or four color inputs not two or three :D")
+    rl.DrawTriangleGradient(p1, p3, p2, c1, c3, c2)
+    rl.DrawTriangleGradient(p1, p4, p3, c1, c4, c3)
+
 def align_rectangle(rect: tuple) -> tuple:
     left = math.floor(rect[0] + 0.5)
     top = math.floor(rect[1] + 0.5)
@@ -55,6 +83,18 @@ def file_dialog():
         ("MIDI Files", "*.mid"),
         ("Karaoke Files (?)", "*.kar"),
     ))
+
+def render_lines():
+    pass
+
+def render_notes():
+    pass
+
+def render_keys():
+    pass
+
+def render_text():
+    pass
 
 def main():
     file_path = file_dialog()
@@ -124,6 +164,26 @@ def main():
 
         v_notes = {}            # Only stores ACTIVE notes
         v_falling_notes = deque() # Stores FINISHED notes (rendering only)
+
+        cs_background = (0x46, 0x46, 0x46, 255)
+        cs_background_dark = multiply_color(cs_background, 0.7)
+        cs_background_verydark = multiply_color(cs_background, 1.3)
+
+        cs_kb_background = (0x99, 0x99, 0x99, 255)
+        cs_kb_background_dark = multiply_color(cs_kb_background, 0.4)
+        cs_kb_background_verydark = multiply_color(cs_kb_background, 0)
+
+        cs_kb_red = (0x98, 0x0a, 0x0d, 255)
+        cs_kb_red_dark = multiply_color(cs_kb_red, 0.5)
+        cs_kb_red_verydark = multiply_color(cs_kb_red, 0.2)
+
+        cs_kb_white = (255, 255, 255, 255)
+        cs_kb_white_dark = multiply_color(cs_kb_white, 0.8)
+        cs_kb_white_verydark = multiply_color(cs_kb_white, 0.6)
+
+        cs_kb_sharp = (0x40, 0x40, 0x40, 255)
+        cs_kb_sharp_dark = multiply_color(cs_kb_sharp, 0.5)
+        cs_kb_sharp_verydark = multiply_color(cs_kb_sharp, 0)
 
         skipping = False
         paused = True
@@ -251,7 +311,7 @@ def main():
             pop_dur = time.perf_counter() - pop_start
 
             rl.BeginDrawing()
-            rl.ClearBackground(rl.DARKGRAY)
+            rl.ClearBackground(cs_background)
 
             if TYPE_CHECKING:
                 ev = (0, 0, 0, 0, 0)
@@ -343,8 +403,11 @@ def main():
 
             render_queue.sort()
             sort_dur = time.perf_counter() - sort_start
+
+
             v_rendered = 0
             ren_start = time.perf_counter()
+            """
             for start, ch, tr, no, duration in render_queue:
                 x_pos = (no + a_pitch_bend[ch]*a_pitch_bend_range[ch]) * scale_x
                 y_pos = scale_y * (midi_time - start - duration)
@@ -391,6 +454,269 @@ def main():
                     )),
                     key_colors[key][1]
                 )
+            """
+
+            # replicating PFA's rendering :D
+
+
+
+
+            # Screen X info
+            r_notes_x = 0
+            r_notes_cx = WIDTH
+
+            # Keys info
+            r_all_white_keys = IS_SHARP.count(False)
+            r_buffer = ((SHARP_RATIO / 2.0) if IS_SHARP[0] else 0.0) + ((SHARP_RATIO / 2.0) if IS_SHARP[127] else 0.0)
+            r_white_cx = r_notes_cx / (r_all_white_keys + r_buffer)
+
+            # Screen Y info
+            r_notes_y = 0
+            r_max_key_cy = HEIGHT * KB_PERCENT
+            r_ideal_key_cy = r_white_cx / KEY_RATIO
+            # .95 for the top vs near. 2.0 for the spacer. .93 for the transition and the red. ESTIMATE.
+            r_ideal_key_cy = (r_ideal_key_cy / 0.95 + 2) / 0.93
+            r_notes_cy = math.floor(HEIGHT - min(r_ideal_key_cy, r_max_key_cy) + 0.5)
+
+            # Round down start time. This is only used for rendering purposes
+            # nvm i can probably skip this (?)
+
+            render_lines()
+            if "RenderLines()":
+                # Vertical lines
+                for i in range(1, 128):
+                    if not IS_SHARP[i-1] and not IS_SHARP[i]:
+                        r_white_keys = IS_SHARP[0:i].count(False)
+                        r_start_x = IS_SHARP[0] * SHARP_RATIO / 2
+                        r_x = math.floor((r_notes_x + r_white_cx * (r_white_keys + r_start_x)) + 0.5)
+                        DrawRectangleRecGradientH(
+                            align_rectangle((r_x - 1, r_notes_y, 3, r_notes_cy)),
+                            cs_background_dark, cs_background_verydark
+                        )
+
+                # Horizontal (Hard!)
+                # hell nah i ain't doing it
+            render_notes()
+            if "RenderNotes()":
+                pass
+            render_keys()
+            if "RenderKeys()":
+                r_keys_y = r_notes_y + r_notes_cy
+                r_keys_cy = HEIGHT - r_notes_cy
+
+                r_transition_pct = .02
+                r_transition_cy = max(3.0, math.floor(r_keys_cy * r_transition_pct + 0.5))
+                r_red_pct = .05
+                r_red_cy = math.floor(r_keys_cy * r_red_pct + 0.5)
+                r_spacer_cy = 2.0
+                r_top_cy = math.floor((r_keys_cy - r_spacer_cy - r_red_cy - r_transition_cy) * 0.95 + 0.5)
+                r_near_cy = r_keys_cy - r_spacer_cy - r_red_cy - r_transition_cy - r_top_cy
+
+                # Draw the background
+                rl.DrawRectangleRec(
+                    align_rectangle((r_notes_x, r_keys_y, r_notes_cx, r_keys_cy)),
+                    cs_kb_background_verydark
+                )
+                DrawRectangleRecGradientV(
+                    align_rectangle((r_notes_x, r_keys_y, r_notes_cx, r_transition_cy)),
+                    cs_background, cs_kb_background_verydark
+                )
+                DrawRectangleRecGradientV(
+                    align_rectangle((r_notes_x, r_keys_y + r_transition_cy, r_notes_cx, r_red_cy)),
+                    cs_kb_red_dark, cs_kb_red
+                )
+                rl.DrawRectangleRec(
+                    align_rectangle((r_notes_x, r_keys_y + r_transition_cy + r_red_cy, r_notes_cx, r_spacer_cy)),
+                    cs_kb_background_dark
+                )
+
+                # Keys info
+                r_key_gap = max(1.0, math.floor(r_white_cx * 0.05 + 0.5))
+                r_key_gap1 = r_key_gap - math.floor(r_key_gap / 2 + 0.5)
+
+                r_start_render = 0
+                r_end_render = 127
+                r_start_x = 0
+                r_sharp_cy = r_top_cy * 0.67
+
+                # Draw the white keys
+                r_cur_x = r_notes_x + r_start_x
+                r_cur_y = r_keys_y + r_transition_cy + r_red_cy + r_spacer_cy
+                for i in range(r_start_render, r_end_render + 1):
+                    if not IS_SHARP[i]:
+                        if key_colors[i][0] == False:
+                            DrawRectangleRecGradientV(
+                                align_rectangle((r_cur_x + r_key_gap1, r_cur_y, r_white_cx - r_key_gap, r_top_cy + r_near_cy)),
+                                cs_kb_white_dark, cs_kb_white
+                            )
+                            DrawRectangleRecGradientV(
+                                align_rectangle((r_cur_x + r_key_gap1, r_cur_y + r_top_cy, r_white_cx - r_key_gap, r_near_cy)),
+                                cs_kb_white_dark, cs_kb_white_verydark
+                            )
+                            DrawRectangleRecGradientV(
+                                align_rectangle((r_cur_x + r_key_gap1, r_cur_y + r_top_cy, r_white_cx - r_key_gap, 2)),
+                                cs_kb_background_dark, cs_kb_white_verydark
+                            )
+
+                            if i == 60: # C4
+                                r_mx_gap = math.floor(r_white_cx * 0.25 + 0.5)
+                                r_mcx = r_white_cx - r_mx_gap * 2 - r_key_gap
+                                r_my = max(r_cur_y + r_top_cy - r_mcx - 5, r_cur_y + r_sharp_cy + 5)
+
+                                rl.DrawRectangleRec(
+                                    align_rectangle((r_cur_x + r_key_gap1 + r_mx_gap, r_my, r_mcx, r_cur_y + r_top_cy - 5 - r_my)),
+                                    cs_kb_white_dark
+                                )
+                        else:
+                            key_color = key_colors[i][1]
+                            key_color_dark = multiply_color(key_color, 0.5)
+
+                            DrawRectangleRecGradientV(
+                                align_rectangle((r_cur_x + r_key_gap1, r_cur_y, r_white_cx - r_key_gap, r_top_cy + r_near_cy - 2.0)),
+                                key_color_dark, key_color
+                            )
+                            rl.DrawRectangleRec(
+                                align_rectangle((r_cur_x + r_key_gap1, r_cur_y + r_top_cy + r_near_cy - 2.0, r_white_cx - r_key_gap, 2.0)),
+                                key_color_dark
+                            )
+
+                            if i == 60: # C4
+                                r_mx_gap = math.floor(r_white_cx * 0.25 + 0.5)
+                                r_mcx = r_white_cx - r_mx_gap * 2.0 - r_key_gap
+                                r_my = max(r_cur_y + r_top_cy + r_near_cy - r_mcx - 7.0, r_cur_y + r_sharp_cy + 5.0)
+
+                                rl.DrawRectangleRec(
+                                    align_rectangle((r_cur_x + r_key_gap1 + r_mx_gap, r_my, r_mcx, r_cur_y+ r_top_cy + r_near_cy - 7.0 - r_my)),
+                                    key_color_dark
+                                )
+                            DrawRectangleRecGradientH(
+                                align_rectangle((math.floor(r_cur_x + r_key_gap1 + r_white_cx - r_key_gap + 0.5), r_cur_y, r_key_gap, r_top_cy + r_near_cy)),
+                                cs_kb_background_verydark, cs_kb_background
+                            )
+                        r_cur_x += r_white_cx
+
+                # Draw the sharps
+                r_start_render = 0
+                r_end_render = 127
+                r_start_x = 0
+
+                r_sharp_top = SHARP_RATIO * 0.7
+                r_cur_x = r_notes_x + r_start_x
+                r_cur_y = r_keys_y + r_transition_cy + r_red_cy + r_spacer_cy
+                for i in range(r_start_render, r_end_render + 1):
+                    if not IS_SHARP[i]:
+                        r_cur_x += r_white_cx
+                    else:
+                        r_nudge_x = 0.0
+                        r_note = i % 12
+                        if r_note in {1, 6}: # C# or F#
+                            r_nudge_x = -SHARP_RATIO / 5
+                        elif r_note in {3, 10}: # D# or A#
+                            r_nudge_x = SHARP_RATIO / 5
+
+                        r_cx = r_white_cx * SHARP_RATIO
+                        r_x = r_cur_x - r_white_cx * (SHARP_RATIO / 2 - r_nudge_x)
+                        r_sharp_top_x1 = r_x + r_white_cx * (SHARP_RATIO - r_sharp_top) / 2
+                        r_sharp_top_x2 = r_sharp_top_x1 + r_white_cx * r_sharp_top
+
+                        if key_colors[i][0] == False:
+                            DrawSkew(
+                                (r_sharp_top_x1, r_cur_y + r_sharp_cy - r_near_cy),
+                                (r_sharp_top_x2, r_cur_y + r_sharp_cy - r_near_cy),
+                                (r_x + r_cx, r_cur_y + r_sharp_cy),
+                                (r_x, r_cur_y + r_sharp_cy),
+                                cs_kb_sharp, cs_kb_sharp, cs_kb_sharp_verydark, cs_kb_sharp_verydark
+                            )
+                            DrawSkew(
+                                (r_sharp_top_x1, r_cur_y - r_near_cy),
+                                (r_sharp_top_x1, r_cur_y + r_sharp_cy - r_near_cy),
+                                (r_x, r_cur_y + r_sharp_cy),
+                                (r_x, r_cur_y),
+                                cs_kb_sharp, cs_kb_sharp, cs_kb_sharp_verydark, cs_kb_sharp_verydark
+                            )
+                            DrawSkew(
+                                (r_sharp_top_x2, r_cur_y + r_sharp_cy - r_near_cy),
+                                (r_sharp_top_x2, r_cur_y - r_near_cy),
+                                (r_x + r_cx, r_cur_y),
+                                (r_x + r_cx, r_cur_y + r_sharp_cy),
+                                cs_kb_sharp, cs_kb_sharp, cs_kb_sharp_verydark, cs_kb_sharp_verydark
+                            )
+                            rl.DrawRectangleRec(
+                                align_rectangle((r_sharp_top_x1, r_cur_y - r_near_cy, r_sharp_top_x2 - r_sharp_top_x1, r_sharp_cy)),
+                                cs_kb_sharp_verydark
+                            )
+                            DrawSkew(
+                                (r_sharp_top_x1, r_cur_y - r_near_cy),
+                                (r_sharp_top_x2, r_cur_y - r_near_cy),
+                                (r_sharp_top_x2, r_cur_y - r_near_cy + r_sharp_cy * 0.45),
+                                (r_sharp_top_x1, r_cur_y - r_near_cy + r_sharp_cy * 0.35),
+                                cs_kb_sharp_dark, cs_kb_sharp_dark, cs_kb_sharp, cs_kb_sharp
+                            )
+                            DrawSkew(
+                                (r_sharp_top_x1, r_cur_y - r_near_cy + r_sharp_cy * 0.35),
+                                (r_sharp_top_x2, r_cur_y - r_near_cy + r_sharp_cy * 0.45),
+                                (r_sharp_top_x2, r_cur_y - r_near_cy + r_sharp_cy * 0.65),
+                                (r_sharp_top_x1, r_cur_y - r_near_cy + r_sharp_cy * 0.55),
+                                cs_kb_sharp, cs_kb_sharp, cs_kb_sharp_verydark, cs_kb_sharp_verydark
+                            )
+                        else:
+                            key_color = key_colors[i][1]
+                            key_color_dark = multiply_color(key_color, 0.5)
+
+                            r_new_near = r_near_cy * 0.25
+
+                            DrawSkew(
+                                (r_sharp_top_x1, r_cur_y + r_sharp_cy - r_new_near),
+                                (r_sharp_top_x2, r_cur_y + r_sharp_cy - r_new_near),
+                                (r_x + r_cx, r_cur_y + r_sharp_cy),
+                                (r_x, r_cur_y + r_sharp_cy),
+                                key_color, key_color, key_color_dark, key_color_dark
+                            )
+                            DrawSkew(
+                                (r_sharp_top_x1, r_cur_y - r_new_near),
+                                (r_sharp_top_x1, r_cur_y + r_sharp_cy - r_new_near),
+                                (r_x, r_cur_y + r_sharp_cy),
+                                (r_x, r_cur_y),
+                                key_color, key_color, key_color_dark, key_color_dark
+                            )
+                            DrawSkew(
+                                (r_sharp_top_x2, r_cur_y + r_sharp_cy - r_new_near),
+                                (r_sharp_top_x2, r_cur_y - r_new_near),
+                                (r_x + r_cx, r_cur_y),
+                                (r_x + r_cx, r_cur_y + r_sharp_cy),
+                                key_color, key_color, key_color_dark, key_color_dark
+                            )
+                            rl.DrawRectangleRec(
+                                align_rectangle((r_sharp_top_x1, r_cur_y - r_new_near, r_sharp_top_x2 - r_sharp_top_x1, r_sharp_cy)),
+                                key_color_dark
+                            )
+                            DrawSkew(
+                                (r_sharp_top_x1, r_cur_y - r_new_near),
+                                (r_sharp_top_x2, r_cur_y - r_new_near),
+                                (r_sharp_top_x2, r_cur_y - r_new_near + r_sharp_cy * 0.35),
+                                (r_sharp_top_x1, r_cur_y - r_new_near + r_sharp_cy * 0.25),
+                                key_color, key_color, key_color, key_color
+                            )
+                            DrawSkew(
+                                (r_sharp_top_x1, r_cur_y - r_new_near + r_sharp_cy * 0.25),
+                                (r_sharp_top_x2, r_cur_y - r_new_near + r_sharp_cy * 0.35),
+                                (r_sharp_top_x2, r_cur_y - r_new_near + r_sharp_cy * 0.75),
+                                (r_sharp_top_x1, r_cur_y - r_new_near + r_sharp_cy * 0.65),
+                                key_color, key_color, key_color_dark, key_color_dark
+                            )
+
+
+
+
+
+
+
+
+            render_text()
+
+
+
+
             ren_dur = time.perf_counter() - ren_start
 
             info_text: list[tuple[str, pr.Color]] = [
