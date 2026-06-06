@@ -12,8 +12,12 @@ from collections import deque
 
 VERSION = "v1_dev"
 
+MAX_DELTA = 0.25
+WIDTH = 640
+HEIGHT = 360
+
 DEBUG = False
-MAX_DELTA = 0
+MIN_DELTA = 0
 
 PFA_COLORS = [
     (51, 102, 255),
@@ -124,7 +128,7 @@ def main():
         skipping = False
         paused = True
 
-        pr.init_window(1280, 720, f"MotdHS's Python MIDI Player Rewritten {VERSION}")
+        pr.init_window(WIDTH, HEIGHT, f"MotdHS's Python MIDI Player Rewritten {VERSION}")
         # pr.set_target_fps(165)
 
         while not pr.window_should_close() and not pr.is_key_pressed(pr.KeyboardKey.KEY_Q):
@@ -149,9 +153,14 @@ def main():
             #         start_time += v_paused_time
             #         v_paused_time = 0
             #     midi_time = time.perf_counter() - start_time
-            delta_sec = time.perf_counter() - prev_time
+            delta_meow = delta_sec = time.perf_counter() - prev_time
+            if MAX_DELTA:
+                delta_meow = min(delta_meow, MAX_DELTA)
+            if MIN_DELTA:
+                delta_meow = max(delta_meow, MIN_DELTA)
+
             if not paused:
-                midi_time += min(delta_sec, MAX_DELTA) if MAX_DELTA else delta_sec
+                midi_time += delta_meow
             prev_time = time.perf_counter()
 
             if skipping:
@@ -316,8 +325,8 @@ def main():
             clean_dur = time.perf_counter() - clean_start
 
             # --- 3. DRAW ALL NOTES (Unified) ---
-            scale_y = (720 - v_keyboard_height) / v_notespeed
-            scale_x = (1280) / 128
+            scale_y = (HEIGHT - v_keyboard_height) / v_notespeed
+            scale_x = (WIDTH) / 128
 
             sort_start = time.perf_counter()
             render_queue = []
@@ -373,11 +382,13 @@ def main():
                 v_rendered += 1
 
             for key in range(128):
-                rl.DrawRectangle(
-                    int(scale_x * key),
-                    720 - v_keyboard_height,
-                    int(scale_x),
-                    v_keyboard_height,
+                rl.DrawRectangleRec(
+                    align_rectangle((
+                        scale_x * key,
+                        HEIGHT - v_keyboard_height,
+                        scale_x,
+                        v_keyboard_height
+                    )),
                     key_colors[key][1]
                 )
             ren_dur = time.perf_counter() - ren_start
@@ -423,7 +434,7 @@ def main():
                 if not a_finished_time:
                     a_finished_time = midi_time
                 finished_text_width = pr.measure_text(f"Playback Finished!", 20)
-                pr.draw_text(f"Playback Finished!", 1280 - finished_text_width - 10, 10, 20, pr.GREEN)
+                pr.draw_text(f"Playback Finished!", WIDTH - finished_text_width - 10, 10, 20, pr.GREEN)
             rl.EndDrawing()
 
         pr.close_window()
