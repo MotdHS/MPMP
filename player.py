@@ -12,12 +12,12 @@ from collections import deque
 
 VERSION = "v1_dev"
 
-MAX_DELTA = 0.25
+MAX_DELTA = True
+CATCH_UP = True
 WIDTH = 1280
 HEIGHT = 720
 
 DEBUG = False
-MIN_DELTA = 0
 
 PFA_COLORS = [
     (51, 102, 255),
@@ -84,18 +84,6 @@ def file_dialog():
         ("Karaoke Files (?)", "*.kar"),
     ))
 
-def render_lines():
-    pass
-
-def render_notes():
-    pass
-
-def render_keys():
-    pass
-
-def render_text():
-    pass
-
 def main():
     file_path = file_dialog()
     print("Initializing MIDI...")
@@ -114,9 +102,64 @@ def main():
     mido.set_backend("kdmapi.mido_backend")
 
     ppq = midi["ppq"]
-    color_palette: dict[int, tuple[tuple[int, int, int, int], tuple[int, int, int, int]]] = {}
+    color_palette: dict[int, tuple[tuple[int, int, int, int], tuple[int, int, int, int], tuple[int, int, int, int]]] = {}
 
     print("Done!")
+    white_key_offsets = []
+    current_white_count = 0
+    for is_sharp in IS_SHARP:
+        white_key_offsets.append(current_white_count)
+        if not is_sharp:
+            current_white_count += 1
+
+    def get_note_x(n: int):
+        white_keys = white_key_offsets[n]
+        start_x = (0 - IS_SHARP[n]) * SHARP_RATIO / 2
+        if IS_SHARP[n]:
+            note = n % 12
+            if note in {1, 6}: # C# or F#
+                start_x -= SHARP_RATIO / 5
+            elif note in {3, 10}: # D# or A#
+                start_x += SHARP_RATIO / 5
+        return r_notes_x + r_white_cx * (white_keys + start_x)
+
+    def render_note(note: tuple):
+        n = note[3]
+        t = note[2]
+        c = note[1]
+        s = note[0]
+        d = note[4]
+        note_color = color_palette[(t<<8) | (c)]
+
+        # Compute true positions
+        x = get_note_x(n) + a_pitch_bend[c] * a_pitch_bend_range[c] * WIDTH/128
+        y = r_notes_cy * (midi_time - s - d) / v_notespeed
+        cx = (r_white_cx * SHARP_RATIO) if IS_SHARP[n] else r_white_cx
+        cy = r_notes_cy * d / v_notespeed
+        # deflate = r_white_cx * 0.15 / 2.0
+
+        # deflate = math.floor(deflate + 0.5)
+        # deflate = max(min(deflate, 3.0), 1.0)
+        deflate = max(min(math.floor((r_white_cx * 0.15 / 2.0) + 0.5), 3.0), 1.0)
+
+        # Clipping :/
+        # min_y = r_notes_y - 5.0
+        # max_y = r_notes_y + r_notes_cy + 5.0
+        # if y > max_y:
+        #     cy -= y - max_y
+        #     y = max_y
+        # if y - cy < min_y:
+        #     cy -= min_y - y + cy
+        #     y = min_y + cy
+
+        rl.DrawRectangleRec(
+            align_rectangle((x, y, cx, max(cy, 1.0))),
+            note_color[2]
+        )
+        DrawRectangleRecGradientH(
+            align_rectangle((x + deflate, y + deflate, cx - deflate * 2, cy - deflate * 2)),
+            note_color[0], note_color[1]
+        )
 
     prev_time = time.perf_counter()
     with mido.open_output() as out: # type: ignore
@@ -155,12 +198,13 @@ def main():
         v_notespeed = 0.15
         v_current_time = - v_notespeed
         midi_time = -2
+        real_time = -2
+        behind = False
+        min_delta = 0
 
         v_rendered = 0
         v_reuse_event = False
         current_color_index = 0
-
-        v_keyboard_height = 60
 
         v_notes = {}            # Only stores ACTIVE notes
         v_falling_notes = deque() # Stores FINISHED notes (rendering only)
@@ -188,20 +232,130 @@ def main():
         skipping = False
         paused = True
 
+        seekback_pending = False
+        seekback_amount = 0
+
+
         pr.init_window(WIDTH, HEIGHT, f"MotdHS's Python MIDI Player Rewritten {VERSION}")
         # pr.set_target_fps(165)
 
         while not pr.window_should_close() and not pr.is_key_pressed(pr.KeyboardKey.KEY_Q):
             if pr.is_key_pressed(pr.KeyboardKey.KEY_RIGHT) or pr.is_key_pressed_repeat(pr.KeyboardKey.KEY_RIGHT):
-                midi_time += 2
+                if seekback_pending:
+                    seekback_amount += 2
+                    if not seekback_amount:
+                        seekback_pending = False
+                else:
+                    midi_time += 2
+                    real_time = midi_time
+                    behind = False
+                    skipping = True
+            if pr.is_key_pressed(pr.KeyboardKey.KEY_LEFT) or pr.is_key_pressed_repeat(pr.KeyboardKey.KEY_LEFT):
+                seekback_amount -= 2
+                if not seekback_pending:
+                    seekback_pending = True
+                    for channel in range(16):
+                        out.send(mido.Message.from_bytes([0xB0 + channel, 123, 0]))
+            if pr.is_key_pressed(pr.KeyboardKey.KEY_HOME) or pr.is_key_pressed(pr.KeyboardKey.KEY_PERIOD):
                 skipping = True
+                paused = True
+                behind = False
+                midi_time = real_time = -2
+                a_stream = midistream.midi_stream(Path(file_path), verbose=True)
+                v_stream = midistream.midi_stream(Path(file_path), verbose=True)
+                # p_stream = midistream.midi_stream(Path(file_path), verbose=True)
+                next(a_stream)
+                next(v_stream)
+                # next(p_stream)
+                a_current_time = 0
+
+                a_bpm = 120
+                a_seconds_per_tick = 60 / (a_bpm * ppq)
+                a_last_tick = 0
+                a_played_notes = 0
+                a_polyphony = 0
+                a_finished = False
+                a_finished_time = 0
+                a_nps_list = deque()
+                a_pitch_bend = []
+                a_pitch_bend_range = []
+                a_rpn = []
+                a_reuse_event = False
+                for i in range(16):
+                    a_pitch_bend.append(0.0)
+                    a_pitch_bend_range.append(2)
+                    a_rpn.append([0x7f, 0x7f])
+                a_key_color_stack: list[list] = [[] for _ in range(128)]
+
+                key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
+
+                v_bpm = 120
+                v_seconds_per_tick = 60 / (v_bpm * ppq)
+                v_last_tick = 0
+                v_current_time = - v_notespeed
+
+                v_rendered = 0
+                v_reuse_event = False
+                current_color_index = 0
+
+                v_notes = {}            # Only stores ACTIVE notes
+                v_falling_notes = deque() # Stores FINISHED notes (rendering only)
+
+            if pr.is_key_pressed(pr.KeyboardKey.KEY_ENTER) and seekback_pending:
+                seekback_pending = False
+                skipping = True
+                paused = True
+                behind = False
+                midi_time += seekback_amount
+                real_time = midi_time
+                seekback_amount = 0
+                a_stream = midistream.midi_stream(Path(file_path), verbose=True)
+                v_stream = midistream.midi_stream(Path(file_path), verbose=True)
+                # p_stream = midistream.midi_stream(Path(file_path), verbose=True)
+                next(a_stream)
+                next(v_stream)
+                # next(p_stream)
+                a_current_time = 0
+
+                a_bpm = 120
+                a_seconds_per_tick = 60 / (a_bpm * ppq)
+                a_last_tick = 0
+                a_played_notes = 0
+                a_polyphony = 0
+                a_finished = False
+                a_finished_time = 0
+                a_nps_list = deque()
+                a_pitch_bend = []
+                a_pitch_bend_range = []
+                a_rpn = []
+                a_reuse_event = False
+                for i in range(16):
+                    a_pitch_bend.append(0.0)
+                    a_pitch_bend_range.append(2)
+                    a_rpn.append([0x7f, 0x7f])
+                a_key_color_stack: list[list] = [[] for _ in range(128)]
+
+                key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
+
+                v_bpm = 120
+                v_seconds_per_tick = 60 / (v_bpm * ppq)
+                v_last_tick = 0
+                v_current_time = - v_notespeed
+
+                v_rendered = 0
+                v_reuse_event = False
+                current_color_index = 0
+
+                v_notes = {}            # Only stores ACTIVE notes
+                v_falling_notes = deque() # Stores FINISHED notes (rendering only)
+
             if pr.is_key_pressed(pr.KeyboardKey.KEY_END):
                 midi_time += 12345678
+                real_time += 12345678
             if pr.is_key_pressed(pr.KeyboardKey.KEY_SPACE):
                 if paused:
                     paused = False
                 else:
-                    v_paused_start = time.perf_counter()
                     paused = True
                     for channel in range(16):
                         out.send(mido.Message.from_bytes([0xB0 + channel, 123, 0]))
@@ -213,14 +367,25 @@ def main():
             #         start_time += v_paused_time
             #         v_paused_time = 0
             #     midi_time = time.perf_counter() - start_time
+
+            if real_time + v_notespeed >= midi_time >= real_time - v_notespeed:
+                behind = False
+                midi_time = real_time
+                min_delta = 0
+            else:
+                min_delta = min(real_time - midi_time, v_notespeed) if CATCH_UP else 0
+
             delta_meow = delta_sec = time.perf_counter() - prev_time
             if MAX_DELTA:
-                delta_meow = min(delta_meow, MAX_DELTA)
-            if MIN_DELTA:
-                delta_meow = max(delta_meow, MIN_DELTA)
+                delta_meow = min(delta_meow, v_notespeed)
+            if min_delta:
+                delta_meow = max(delta_meow, min_delta)
+            if delta_meow != delta_sec and not (paused or skipping):
+                behind = True
 
-            if not paused:
+            if not (paused or skipping or seekback_pending):
                 midi_time += delta_meow
+                real_time += delta_sec
             prev_time = time.perf_counter()
 
             if skipping:
@@ -231,7 +396,7 @@ def main():
             audio_start = time.perf_counter()
             key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
             a_index = -1
-            while not paused or skipping: # AUDIO LOOP
+            while not (paused or seekback_pending) or skipping: # AUDIO LOOP
                 a_index += 1
                 # Before checking, decide if we need to fetch a new event or reuse the old one
                 if not a_reuse_event:
@@ -266,7 +431,8 @@ def main():
                                 fill_rgb = PFA_COLORS[current_color_index % 16]
                                 color_palette[color_key] = (
                                     (fill_rgb[0], fill_rgb[1], fill_rgb[2], 255),
-                                    (int(fill_rgb[0]/1.75), int(fill_rgb[1]/1.75), int(fill_rgb[2]/1.75), 255),
+                                    (int(fill_rgb[0]/2), int(fill_rgb[1]/2), int(fill_rgb[2]/2), 255),
+                                    (int(fill_rgb[0]/5), int(fill_rgb[1]/5), int(fill_rgb[2]/5), 255),
                                 )
                                 current_color_index += 1
                             a_key_color_stack[event[3]].append(color_key)
@@ -354,7 +520,8 @@ def main():
                             fill_rgb = PFA_COLORS[current_color_index % 16]
                             color_palette[color_key] = (
                                 (fill_rgb[0], fill_rgb[1], fill_rgb[2], 255),
-                                (int(fill_rgb[0]/1.75), int(fill_rgb[1]/1.75), int(fill_rgb[2]/1.75), 255),
+                                (int(fill_rgb[0]/2), int(fill_rgb[1]/2), int(fill_rgb[2]/2), 255),
+                                (int(fill_rgb[0]/5), int(fill_rgb[1]/5), int(fill_rgb[2]/5), 255),
                             )
                             current_color_index += 1
 
@@ -385,9 +552,6 @@ def main():
             clean_dur = time.perf_counter() - clean_start
 
             # --- 3. DRAW ALL NOTES (Unified) ---
-            scale_y = (HEIGHT - v_keyboard_height) / v_notespeed
-            scale_x = (WIDTH) / 128
-
             sort_start = time.perf_counter()
             render_queue = []
 
@@ -481,7 +645,6 @@ def main():
             # Round down start time. This is only used for rendering purposes
             # nvm i can probably skip this (?)
 
-            render_lines()
             if "RenderLines()":
                 # Vertical lines
                 for i in range(1, 128):
@@ -496,10 +659,34 @@ def main():
 
                 # Horizontal (Hard!)
                 # hell nah i ain't doing it
-            render_notes()
-            if "RenderNotes()":
-                pass
-            render_keys()
+
+            if "RenderNotes()": # render_queue: list of (start, ch, tr, no, duration)
+                # i'll optimize this later idk :D
+
+                # Do we have any notes to render?
+                # I am not sure!
+
+                # Render notes. Regular notes then sharps to  make sure they're not hidden
+                r_has_sharp = False
+                for note in render_queue:
+                    if not IS_SHARP[note[3]]:
+                        render_note(note)
+                        v_rendered += 1
+                    else:
+                        r_has_sharp = True
+
+                if r_has_sharp:
+                    for note in render_queue:
+                        if IS_SHARP[note[3]]:
+                            render_note(note)
+                            v_rendered += 1
+                        else:
+                            r_has_sharp = True
+
+
+
+
+
             if "RenderKeys()":
                 r_keys_y = r_notes_y + r_notes_cy
                 r_keys_cy = HEIGHT - r_notes_cy
@@ -708,15 +895,6 @@ def main():
 
 
 
-
-
-
-
-            render_text()
-
-
-
-
             ren_dur = time.perf_counter() - ren_start
 
             info_text: list[tuple[str, pr.Color]] = [
@@ -741,6 +919,20 @@ def main():
                     (f"Total: {audio_dur+pop_dur+pv_dur+clean_dur+sort_dur+ren_dur:,.4f}", pr.YELLOW),
                     (f"Previous delta time: {delta_sec:,.4f}", pr.YELLOW),
                 ])
+            if behind:
+                info_text.append((f"Lagging behind by {abs(real_time - midi_time)//60:.0f}:{abs(real_time - midi_time)%60:0>7.4f}", pr.RED))
+
+            if seekback_pending:
+                seekback_text = f"Seek backwards by {abs(seekback_amount)} seconds? Press [Enter] to confirm"
+                seekback_text_length = pr.measure_text(seekback_text, 30)
+                pr.draw_text(seekback_text, int(WIDTH/2-seekback_text_length/2)+3, int(HEIGHT/2-33/2)+3, 30, (32, 32, 32, 255))
+                pr.draw_text(seekback_text, int(WIDTH/2-seekback_text_length/2), int(HEIGHT/2-33/2), 30, pr.GREEN)
+
+                seekback_warning = "Seeking backwards is not optimized yet, as it just restarts the entire MIDI stream. It could take a while on large MIDIs."
+                seekback_warning_length = pr.measure_text(seekback_warning, 20)
+                pr.draw_text(seekback_warning, int(WIDTH/2-seekback_warning_length/2)+2, int(HEIGHT/2-22/2)+2+30, 20, (32, 32, 32, 255))
+                pr.draw_text(seekback_warning, int(WIDTH/2-seekback_warning_length/2), int(HEIGHT/2-22/2)+30, 20, pr.ORANGE)
+
 
             info_length = max([pr.measure_text(x, 20) for x, _ in info_text])
 
