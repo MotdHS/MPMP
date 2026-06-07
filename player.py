@@ -10,14 +10,15 @@ import raylib as rl
 from tkinter import filedialog
 from collections import deque
 
-VERSION = "v1_dev"
+VERSION = "v1.0.0"
 
-MAX_DELTA = True
-CATCH_UP = True
 WIDTH = 1280
 HEIGHT = 720
+VISUALIZE_PITCH_BENDS = True
 
 DEBUG = False
+MAX_DELTA = True
+CATCH_UP = True
 
 PFA_COLORS = [
     (51, 102, 255),
@@ -132,7 +133,9 @@ def main():
         note_color = color_palette[(t<<8) | (c)]
 
         # Compute true positions
-        x = get_note_x(n) + a_pitch_bend[c] * a_pitch_bend_range[c] * WIDTH/128
+        x = get_note_x(n)
+        if VISUALIZE_PITCH_BENDS:
+            x += a_pitch_bend[c] * a_pitch_bend_range[c] * WIDTH/128
         y = r_notes_cy * (midi_time - s - d) / v_notespeed
         cx = (r_white_cx * SHARP_RATIO) if IS_SHARP[n] else r_white_cx
         cy = r_notes_cy * d / v_notespeed
