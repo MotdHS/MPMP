@@ -188,9 +188,6 @@ def main():
             a_pitch_bend.append(0.0)
             a_pitch_bend_range.append(2)
             a_rpn.append([0x7f, 0x7f])
-        a_key_color_stack: list[list] = [[] for _ in range(128)]
-
-        key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
 
         v_bpm = 120
         v_seconds_per_tick = 60 / (v_bpm * ppq)
@@ -285,9 +282,6 @@ def main():
                     a_pitch_bend.append(0.0)
                     a_pitch_bend_range.append(2)
                     a_rpn.append([0x7f, 0x7f])
-                a_key_color_stack: list[list] = [[] for _ in range(128)]
-
-                key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
 
                 v_bpm = 120
                 v_seconds_per_tick = 60 / (v_bpm * ppq)
@@ -333,9 +327,6 @@ def main():
                     a_pitch_bend.append(0.0)
                     a_pitch_bend_range.append(2)
                     a_rpn.append([0x7f, 0x7f])
-                a_key_color_stack: list[list] = [[] for _ in range(128)]
-
-                key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
 
                 v_bpm = 120
                 v_seconds_per_tick = 60 / (v_bpm * ppq)
@@ -394,10 +385,7 @@ def main():
             if TYPE_CHECKING:
                 event = (0, 0, 0, 0, 0)
             audio_start = time.perf_counter()
-            key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
-            a_index = -1
             while not (paused or seekback_pending) or skipping: # AUDIO LOOP
-                a_index += 1
                 # Before checking, decide if we need to fetch a new event or reuse the old one
                 if not a_reuse_event:
                     event = next(a_stream, None)
@@ -435,16 +423,10 @@ def main():
                                     (int(fill_rgb[0]/5), int(fill_rgb[1]/5), int(fill_rgb[2]/5), 255),
                                 )
                                 current_color_index += 1
-                            a_key_color_stack[event[3]].append(color_key)
                     if event[2] >> 4 in [0x8, 0x9]:
                         if event[2] >> 4 == 0x8 or event[4] == 0:
                             a_polyphony -= 1
-                            stack = a_key_color_stack[event[3]]
                             color_key = (event[0] << 8) | (event[2] & 0b1111)
-                            for i in range(len(stack) - 1, -1, -1):
-                                if stack[i] == color_key:
-                                    stack.pop(i)
-                                    break
                     if event[2] >> 4 == 0xb: #controller, here i'll only use it for pitch bend range
                         if event[3] == 0x64:
                             a_rpn[event[2] & 0b1111][0] = event[4]
@@ -462,9 +444,6 @@ def main():
                 a_last_tick = event[1]
             audio_dur = time.perf_counter() - audio_start
 
-            for note in range(128):
-                if a_key_color_stack[note]:
-                    key_colors[note] = (True, color_palette[a_key_color_stack[note][-1]][0])
 
             pop_start = time.perf_counter()
             try:
@@ -660,6 +639,7 @@ def main():
                 # Horizontal (Hard!)
                 # hell nah i ain't doing it
 
+            key_colors = [(BLACK_NOTE if IS_SHARP[x] else WHITE_NOTE) for x in range(128)]
             if "RenderNotes()": # render_queue: list of (start, ch, tr, no, duration)
                 # i'll optimize this later idk :D
 
@@ -674,6 +654,9 @@ def main():
                         v_rendered += 1
                     else:
                         r_has_sharp = True
+                    if note[0] + v_notespeed <= midi_time:
+                        color_key = (note[2] << 8) | (note[1] & 0b1111)
+                        key_colors[note[3]] = (True, color_palette[color_key][0])
 
                 if r_has_sharp:
                     for note in render_queue:
