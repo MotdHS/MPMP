@@ -14,8 +14,8 @@ A MIDI player written in Python using raylib for graphics, because I am bored.
 **NOTE**: This program has only been tested on Windows and it may not work on other platforms, because it uses KDMAPI for audio, which requires OmniMIDI, which only natively supports Windows.
 - Install [OmniMIDI](https://github.com/KeppySoftware/OmniMIDI/releases) for audio
 - Install [Python](https://www.python.org/downloads/) (tested with Python 3.14)
-- Run `pip install -r requirements.txt` in the project folder to install the dependencies
-- Run `python player.py` to run the player
+- Run `setup.bat` to install all the dependencies
+- Run `run.bat` to run the player
 
 ## Credits
 - raylib: https://github.com/raysan5/raylib
