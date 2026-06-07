@@ -236,7 +236,7 @@ def main():
         seekback_amount = 0
 
 
-        pr.init_window(WIDTH, HEIGHT, f"MotdHS's Python MIDI Player Rewritten {VERSION}")
+        pr.init_window(WIDTH, HEIGHT, f"MotdHS's Python MIDI Player {VERSION}")
         # pr.set_target_fps(165)
 
         while not pr.window_should_close() and not pr.is_key_pressed(pr.KeyboardKey.KEY_Q):

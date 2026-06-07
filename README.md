@@ -1,4 +1,4 @@
-# MotdHS's Python MIDI Player Rewritten
+# MotdHS's Python MIDI Player
 A MIDI player written in Python using raylib for graphics, because I am bored.
 
 ## Features
