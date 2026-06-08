@@ -10,7 +10,8 @@ import raylib as rl
 from tkinter import filedialog
 from collections import deque
 
-VERSION = "v1.1.0"
+version_file = Path(__file__).parent / "version.txt"
+VERSION = version_file.read_text().strip() if version_file.exists() else "(dev version)"
 
 WIDTH = 1280
 HEIGHT = 720
