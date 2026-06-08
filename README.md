@@ -7,7 +7,7 @@ A MIDI player written in Python using raylib for graphics, because I am bored.
 - PFA-like visuals
 - Pitch bend visualization
 - Info overlay with BPM, NPS, Polyphony, etc.
-- Using `mido` with `kdmapi.mido_backend` for audio
+- Using KDMAPI for audio
 - Slowness of Python :D (?)
 
 ## How to Run
@@ -22,5 +22,4 @@ A MIDI player written in Python using raylib for graphics, because I am bored.
 - raylib-python-cffi: https://github.com/electronstudio/raylib-python-cffi
 - OmniMIDI: https://github.com/KeppySoftware/OmniMIDI
 - KDMAPI wrapper for Python: https://github.com/python-midi/kdmapi
-- Mido: https://github.com/mido/mido
 - Piano From Above: https://github.com/brian-pantano/PianoFromAbove
