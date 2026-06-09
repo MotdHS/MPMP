@@ -16,6 +16,8 @@ VERSION = version_file.read_text().strip() if version_file.exists() else "(dev v
 WIDTH = 1280
 HEIGHT = 720
 VISUALIZE_PITCH_BENDS = True
+ENABLE_VISUALIZATION = True
+ENABLE_AUDIO = True
 
 DEBUG = False
 MAX_DELTA = True
@@ -101,11 +103,12 @@ def main():
     print(f"Took {load_end - load_start:.5f} seconds")
     midi: midistream.MIDIData = midistream.get_midi_data(Path(file_path), verbose=True)
 
-    if kdm.InitializeKDMAPIStream():
-        print("KDMAPI Initialized!")
-    else:
-        print("Something went wrong while trying to initialize KDMAPI. Did you install OmniMIDI?")
-        exit()
+    if ENABLE_AUDIO:
+        if kdm.InitializeKDMAPIStream():
+            print("KDMAPI Initialized!")
+        else:
+            print("Something went wrong while trying to initialize KDMAPI. Did you install OmniMIDI?")
+            exit()
 
     ppq = midi["ppq"]
     color_palette: dict[int, tuple[tuple[int, int, int, int], tuple[int, int, int, int], tuple[int, int, int, int]]] = {}
@@ -336,6 +339,7 @@ def main():
                 a_pitch_bend.append(0.0)
                 a_pitch_bend_range.append(2)
                 a_rpn.append([0x7f, 0x7f])
+            a_has_active_notes = [[False for _ in range(128)] for _ in range(16)]
 
             v_bpm = 120
             v_seconds_per_tick = 60 / (v_bpm * ppq)
@@ -359,6 +363,7 @@ def main():
                 paused = True
                 for channel in range(16):
                     kdm.SendDirectData(int.from_bytes((0xB0 + channel, 123, 0), byteorder="little"))
+                    a_has_active_notes = [[False for _ in range(128)] for _ in range(16)]
 
         # if paused:
         #     v_paused_time = time.perf_counter() - v_paused_start
@@ -391,6 +396,7 @@ def main():
         if skipping:
             for channel in range(16):
                 kdm.SendDirectData(int.from_bytes((0xB0 + channel, 123, 0), byteorder="little"))
+                a_has_active_notes = [[False for _ in range(128)] for _ in range(16)]
         if TYPE_CHECKING:
             event = (0, 0, 0, 0, 0)
         audio_start = time.perf_counter()
@@ -435,7 +441,6 @@ def main():
                 if event[2] >> 4 in [0x8, 0x9]:
                     if event[2] >> 4 == 0x8 or event[4] == 0:
                         a_polyphony -= 1
-                        color_key = (event[0] << 8) | (event[2] & 0b1111)
                 if event[2] >> 4 == 0xb: #controller, here i'll only use it for pitch bend range
                     if event[3] == 0x64:
                         a_rpn[event[2] & 0b1111][0] = event[4]
@@ -447,7 +452,7 @@ def main():
                 if event[2] >> 4 == 0xe: #pitch bend
                     a_pitch_bend[event[2] & 0b1111] = (event[3] + (event[4] << 7) - 8192) / 8192
 
-                if (not skipping or event[2] >> 4 not in [0x8, 0x9]) and event is not None:
+                if ENABLE_AUDIO and (not skipping or event[2] >> 4 not in [0x8, 0x9]) and (event is not None):
                     # print(event)
                     # out.send(mido.Message.from_bytes(event[2:]))
 
@@ -473,89 +478,92 @@ def main():
             ev = (0, 0, 0, 0, 0)
         # --- 1. PROCESS EVENTS ---
         pv_start = time.perf_counter()
-        while True:
-            # Before checking, decide if we need to fetch a new event or reuse the old one
-            if not v_reuse_event:
-                ev = next(v_stream, None)
-            else:
-                v_reuse_event = False  # Reset the flag since we just reused it
-
-            if ev is None:
-                break
-
-            v_delta_tick = ev[1] - v_last_tick
-            v_current_time_temp = v_current_time + (v_delta_tick * v_seconds_per_tick)
-            if v_current_time_temp > midi_time:
-                v_reuse_event = True
-                break
-            v_current_time = v_current_time_temp
-
-            if ev[2] == 0x51:
-                v_bpm = ev[3]
-                v_seconds_per_tick = 60 / (v_bpm * ppq)
-
-            if ev[2] != 0x51 and ev[2] >> 4 in (0x8, 0x9):
-                tr = ev[0]
-                ch = ev[2] & 0b1111
-                no = ev[3]
-                note_key = (tr << 16) | (ch << 8) | no
-
-                # NOTE ON
-                if ev[2] >> 4 == 0x9 and ev[4] != 0:
-                    if note_key not in v_notes:
-                        v_notes[note_key] = deque()
-                    v_notes[note_key].append((v_current_time, ev[4]))
-                    color_key = (tr << 8) | ch
-                    if color_key not in color_palette:
-                        fill_rgb = PFA_COLORS[current_color_index % 16]
-                        color_palette[color_key] = (
-                            (fill_rgb[0], fill_rgb[1], fill_rgb[2], 255),
-                            (int(fill_rgb[0]/2), int(fill_rgb[1]/2), int(fill_rgb[2]/2), 255),
-                            (int(fill_rgb[0]/5), int(fill_rgb[1]/5), int(fill_rgb[2]/5), 255),
-                        )
-                        current_color_index += 1
-
-                # NOTE OFF
+        if ENABLE_VISUALIZATION:
+            while True:
+                # Before checking, decide if we need to fetch a new event or reuse the old one
+                if not v_reuse_event:
+                    ev = next(v_stream, None)
                 else:
-                    if note_key in v_notes and v_notes[note_key]:
-                        start_t, _ = v_notes[note_key].popleft()
-                        duration = v_current_time - start_t
-                        if not v_notes[note_key]:
-                            del v_notes[note_key]
+                    v_reuse_event = False  # Reset the flag since we just reused it
 
-                        if v_current_time >= midi_time - v_notespeed:
-                            v_falling_notes.append((start_t, ch, tr, no, duration))
+                if ev is None:
+                    break
 
-            v_last_tick = ev[1]
+                v_delta_tick = ev[1] - v_last_tick
+                v_current_time_temp = v_current_time + (v_delta_tick * v_seconds_per_tick)
+                if v_current_time_temp > midi_time:
+                    v_reuse_event = True
+                    break
+                v_current_time = v_current_time_temp
+
+                if ev[2] == 0x51:
+                    v_bpm = ev[3]
+                    v_seconds_per_tick = 60 / (v_bpm * ppq)
+
+                if ev[2] != 0x51 and ev[2] >> 4 in (0x8, 0x9):
+                    tr = ev[0]
+                    ch = ev[2] & 0b1111
+                    no = ev[3]
+                    note_key = (tr << 16) | (ch << 8) | no
+
+                    # NOTE ON
+                    if ev[2] >> 4 == 0x9 and ev[4] != 0:
+                        if note_key not in v_notes:
+                            v_notes[note_key] = deque()
+                        v_notes[note_key].append((v_current_time, ev[4]))
+                        color_key = (tr << 8) | ch
+                        if color_key not in color_palette:
+                            fill_rgb = PFA_COLORS[current_color_index % 16]
+                            color_palette[color_key] = (
+                                (fill_rgb[0], fill_rgb[1], fill_rgb[2], 255),
+                                (int(fill_rgb[0]/2), int(fill_rgb[1]/2), int(fill_rgb[2]/2), 255),
+                                (int(fill_rgb[0]/5), int(fill_rgb[1]/5), int(fill_rgb[2]/5), 255),
+                            )
+                            current_color_index += 1
+
+                    # NOTE OFF
+                    else:
+                        if note_key in v_notes and v_notes[note_key]:
+                            start_t, _ = v_notes[note_key].popleft()
+                            duration = v_current_time - start_t
+                            if not v_notes[note_key]:
+                                del v_notes[note_key]
+
+                            if v_current_time >= midi_time - v_notespeed:
+                                v_falling_notes.append((start_t, ch, tr, no, duration))
+
+                v_last_tick = ev[1]
         pv_dur = time.perf_counter() - pv_start
 
         # --- 2. CLEANUP OLD NOTES (Optimization) ---
         # efficiently remove notes that have scrolled off the bottom
         # Condition: start + duration < v_time - v_notespeed
         clean_start = time.perf_counter()
-        while v_falling_notes:
-            note = v_falling_notes[0]
-            if note[0] + note[4] < midi_time - v_notespeed:
-                v_falling_notes.popleft()
-            else:
-                break
+        if ENABLE_VISUALIZATION:
+            while v_falling_notes:
+                note = v_falling_notes[0]
+                if note[0] + note[4] < midi_time - v_notespeed:
+                    v_falling_notes.popleft()
+                else:
+                    break
         clean_dur = time.perf_counter() - clean_start
 
         # --- 3. DRAW ALL NOTES (Unified) ---
         sort_start = time.perf_counter()
         render_queue = []
+        if ENABLE_VISUALIZATION:
 
-        render_queue.extend(v_falling_notes)
+            render_queue.extend(v_falling_notes)
 
-        for note_key, note_list in v_notes.items():
-            tr = note_key >> 16
-            ch = (note_key >> 8) & 0xFF
-            no = note_key & 0xFF
-            for start, _ in note_list:
-                duration = midi_time - start
-                render_queue.append((start, ch, tr, no, duration))
+            for note_key, note_list in v_notes.items():
+                tr = note_key >> 16
+                ch = (note_key >> 8) & 0xFF
+                no = note_key & 0xFF
+                for start, _ in note_list:
+                    duration = midi_time - start
+                    render_queue.append((start, ch, tr, no, duration))
 
-        render_queue.sort()
+            render_queue.sort()
         sort_dur = time.perf_counter() - sort_start
 
 
@@ -658,24 +666,25 @@ def main():
             # I am not sure!
 
             # Render notes. Regular notes then sharps to  make sure they're not hidden
-            r_has_sharp = False
-            for note in render_queue:
-                if not IS_SHARP[note[3]]:
-                    render_note(note)
-                    v_rendered += 1
-                else:
-                    r_has_sharp = True
-                if note[0] + v_notespeed <= midi_time:
-                    color_key = (note[2] << 8) | (note[1] & 0b1111)
-                    key_colors[note[3]] = (True, color_palette[color_key][0])
-
-            if r_has_sharp:
+            if ENABLE_VISUALIZATION:
+                r_has_sharp = False
                 for note in render_queue:
-                    if IS_SHARP[note[3]]:
+                    if not IS_SHARP[note[3]]:
                         render_note(note)
                         v_rendered += 1
                     else:
                         r_has_sharp = True
+                    if note[0] + v_notespeed <= midi_time:
+                        color_key = (note[2] << 8) | (note[1] & 0b1111)
+                        key_colors[note[3]] = (True, color_palette[color_key][0])
+
+                if r_has_sharp:
+                    for note in render_queue:
+                        if IS_SHARP[note[3]]:
+                            render_note(note)
+                            v_rendered += 1
+                        else:
+                            r_has_sharp = True
 
 
 
@@ -950,7 +959,7 @@ def main():
         rl.EndDrawing()
 
     pr.close_window()
-    kdm.TerminateKDMAPIStream()
+    if ENABLE_AUDIO: kdm.TerminateKDMAPIStream()
 
 if __name__ == "__main__":
     main()
