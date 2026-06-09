@@ -19,17 +19,16 @@ def decode_vlq_single(a):
     return (a >> 7, a & 0b0111_1111)
 
 def decode_vlq(a):
-    result = []
+    length = 0
     value = 0
     for i in a:
         vlq = decode_vlq_single(i)
-        result.append(vlq[1])
+        value <<= 7
+        value += vlq[1]
+        length += 1
         if not vlq[0]:
             break
-    for i in result:
-        value <<= 7
-        value += i
-    ret = (value, len(result))
+    ret = (value, length)
     # print(ret)
     return ret
 
@@ -83,7 +82,7 @@ def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], track_num: int,
                     tempo_us <<= 8
                     tempo_us += i
                 tempo = 60_000_000.0/float(tempo_us)
-                yield (track_num, current_time, "tempo", tempo)
+                yield (track_num, current_time, 0x51, tempo)
                 ci += length[0]
             else:
                 ci += length[0]

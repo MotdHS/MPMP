@@ -412,12 +412,12 @@ def main():
                 break
             a_current_time = a_current_time_temp
 
-            if event[2] == "tempo":
+            if event[2] == 0x51:
                 a_bpm = event[3]
                 # print(a_bpm)
                 a_seconds_per_tick = 60 / (a_bpm * ppq)
 
-            if event[2] != "tempo":
+            if event[2] != 0x51:
                 if event[2] >> 4 == 0x9:
                     if event[4] != 0:
                         a_played_notes += 1
@@ -490,11 +490,11 @@ def main():
                 break
             v_current_time = v_current_time_temp
 
-            if ev[2] == "tempo":
+            if ev[2] == 0x51:
                 v_bpm = ev[3]
                 v_seconds_per_tick = 60 / (v_bpm * ppq)
 
-            if ev[2] != "tempo" and ev[2] >> 4 in (0x8, 0x9):
+            if ev[2] != 0x51 and ev[2] >> 4 in (0x8, 0x9):
                 tr = ev[0]
                 ch = ev[2] & 0b1111
                 no = ev[3]
