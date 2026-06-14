@@ -18,9 +18,12 @@ HEIGHT = 720
 VISUALIZE_PITCH_BENDS = True
 ENABLE_VISUALIZATION = True
 ENABLE_AUDIO = True
+STREAM_MIDI = True
+NOTESPEED = 0.15
+OVERRIDE_INSTRUMENT = -1
 
 DEBUG = False
-MAX_DELTA = True
+MAX_DELTA = False
 CATCH_UP = True
 
 PFA_COLORS = [
@@ -96,12 +99,20 @@ def main():
     a_stream = midistream.midi_stream(Path(file_path), verbose=True)
     v_stream = midistream.midi_stream(Path(file_path), verbose=True)
     # p_stream = midistream.midi_stream(Path(file_path), verbose=True)
-    next(a_stream)
-    next(v_stream)
+    if STREAM_MIDI:
+        next(a_stream)
+        next(v_stream)
+
     # next(p_stream)
     load_end = time.perf_counter()
     print(f"Took {load_end - load_start:.5f} seconds")
     midi: midistream.MIDIData = midistream.get_midi_data(Path(file_path), verbose=True)
+    unstream = []
+    a_index = 0
+    v_index = 0
+    if not STREAM_MIDI:
+        unstream = midistream.midi_unstream(Path(file_path), verbose=True)
+    unstream_len = len(unstream)
 
     if ENABLE_AUDIO:
         if kdm.InitializeKDMAPIStream():
@@ -138,15 +149,19 @@ def main():
         c = note[1]
         s = note[0]
         d = note[4]
+        pb = note[5]
         note_color = color_palette[(t<<8) | (c)]
 
         # Compute true positions
         x = get_note_x(n)
-        if VISUALIZE_PITCH_BENDS:
-            x += a_pitch_bend[c] * a_pitch_bend_range[c] * WIDTH/128
         y = r_notes_cy * (midi_time - s - d) / v_notespeed
         cx = (r_white_cx * SHARP_RATIO) if IS_SHARP[n] else r_white_cx
         cy = r_notes_cy * d / v_notespeed
+        if VISUALIZE_PITCH_BENDS:
+            if y + cy >= r_notes_cy:
+                x += a_pitch_bend[c] * a_pitch_bend_range[c] * WIDTH/128
+            else:
+                x += pb * WIDTH/128
         # deflate = r_white_cx * 0.15 / 2.0
 
         # deflate = math.floor(deflate + 0.5)
@@ -175,6 +190,8 @@ def main():
     prev_time = time.perf_counter()
 
 
+    a_override_instrument = OVERRIDE_INSTRUMENT
+
     a_current_time = 0
 
     a_bpm = 120
@@ -188,23 +205,23 @@ def main():
     a_pitch_bend = []
     a_pitch_bend_range = []
     a_rpn = []
-    a_reuse_event = False
-    # cython
-    # for i in range(16):
-    #     a_pitch_bend[i] = 0.0
-    #     a_pitch_bend_range[i] = 2
-    #     a_rpn[i][0] = 0x7f
-    #     a_rpn[i][1] = 0x7f
-    # python
     for i in range(16):
         a_pitch_bend.append(0.0)
         a_pitch_bend_range.append(2)
         a_rpn.append([0x7f, 0x7f])
+    v_pitch_bend = []
+    v_pitch_bend_range = []
+    v_rpn = []
+    for i in range(16):
+        v_pitch_bend.append(0.0)
+        v_pitch_bend_range.append(2)
+        v_rpn.append([0x7f, 0x7f])
+    a_reuse_event = False
 
     v_bpm = 120
     v_seconds_per_tick = 60 / (v_bpm * ppq)
     v_last_tick = 0
-    v_notespeed = 0.15
+    v_notespeed = NOTESPEED
     v_current_time = - v_notespeed
     midi_time = -2
     real_time = -2
@@ -215,7 +232,7 @@ def main():
     v_reuse_event = False
     current_color_index = 0
 
-    v_notes = {}            # Only stores ACTIVE notes
+    v_notes: dict[int, deque[tuple[float, float, float]]] = {}            # Only stores ACTIVE notes
     v_falling_notes = deque() # Stores FINISHED notes (rendering only)
 
     cs_background = (0x46, 0x46, 0x46, 255)
@@ -273,8 +290,11 @@ def main():
             a_stream = midistream.midi_stream(Path(file_path), verbose=True)
             v_stream = midistream.midi_stream(Path(file_path), verbose=True)
             # p_stream = midistream.midi_stream(Path(file_path), verbose=True)
-            next(a_stream)
-            next(v_stream)
+            if STREAM_MIDI:
+                next(a_stream)
+                next(v_stream)
+            a_index = 0
+            v_index = 0
             # next(p_stream)
             a_current_time = 0
 
@@ -294,6 +314,13 @@ def main():
                 a_pitch_bend.append(0.0)
                 a_pitch_bend_range.append(2)
                 a_rpn.append([0x7f, 0x7f])
+            v_pitch_bend = []
+            v_pitch_bend_range = []
+            v_rpn = []
+            for i in range(16):
+                v_pitch_bend.append(0.0)
+                v_pitch_bend_range.append(2)
+                v_rpn.append([0x7f, 0x7f])
 
             v_bpm = 120
             v_seconds_per_tick = 60 / (v_bpm * ppq)
@@ -318,8 +345,11 @@ def main():
             a_stream = midistream.midi_stream(Path(file_path), verbose=True)
             v_stream = midistream.midi_stream(Path(file_path), verbose=True)
             # p_stream = midistream.midi_stream(Path(file_path), verbose=True)
-            next(a_stream)
-            next(v_stream)
+            if STREAM_MIDI:
+                next(a_stream)
+                next(v_stream)
+            a_index = 0
+            v_index = 0
             # next(p_stream)
             a_current_time = 0
 
@@ -339,7 +369,13 @@ def main():
                 a_pitch_bend.append(0.0)
                 a_pitch_bend_range.append(2)
                 a_rpn.append([0x7f, 0x7f])
-            a_has_active_notes = [[False for _ in range(128)] for _ in range(16)]
+            v_pitch_bend = []
+            v_pitch_bend_range = []
+            v_rpn = []
+            for i in range(16):
+                v_pitch_bend.append(0.0)
+                v_pitch_bend_range.append(2)
+                v_rpn.append([0x7f, 0x7f])
 
             v_bpm = 120
             v_seconds_per_tick = 60 / (v_bpm * ppq)
@@ -359,11 +395,26 @@ def main():
         if pr.is_key_pressed(pr.KeyboardKey.KEY_SPACE):
             if paused:
                 paused = False
+                if a_override_instrument != -1:
+                    for channel in range(16):
+                        if channel == 9: continue
+                        kdm.SendDirectData(int.from_bytes((0xC0 + channel, a_override_instrument), byteorder="little"))
             else:
                 paused = True
                 for channel in range(16):
                     kdm.SendDirectData(int.from_bytes((0xB0 + channel, 123, 0), byteorder="little"))
-                    a_has_active_notes = [[False for _ in range(128)] for _ in range(16)]
+        if pr.is_key_pressed(pr.KeyboardKey.KEY_LEFT_BRACKET) or pr.is_key_pressed_repeat(pr.KeyboardKey.KEY_LEFT_BRACKET):
+            a_override_instrument = (a_override_instrument % 129) - 1
+            if a_override_instrument != -1:
+                for channel in range(16):
+                    if channel == 9: continue
+                    kdm.SendDirectData(int.from_bytes((0xC0 + channel, a_override_instrument), byteorder="little"))
+        if pr.is_key_pressed(pr.KeyboardKey.KEY_RIGHT_BRACKET) or pr.is_key_pressed_repeat(pr.KeyboardKey.KEY_RIGHT_BRACKET):
+            a_override_instrument = ((a_override_instrument + 2) % 129) - 1
+            if a_override_instrument != -1:
+                for channel in range(16):
+                    if channel == 9: continue
+                    kdm.SendDirectData(int.from_bytes((0xC0 + channel, a_override_instrument), byteorder="little"))
 
         # if paused:
         #     v_paused_time = time.perf_counter() - v_paused_start
@@ -383,7 +434,7 @@ def main():
         delta_meow = delta_sec = time.perf_counter() - prev_time
         if MAX_DELTA:
             delta_meow = min(delta_meow, v_notespeed)
-        if min_delta:
+        if min_delta and MAX_DELTA:
             delta_meow = max(delta_meow, min_delta)
         if delta_meow != delta_sec and not (paused or skipping):
             behind = True
@@ -396,14 +447,23 @@ def main():
         if skipping:
             for channel in range(16):
                 kdm.SendDirectData(int.from_bytes((0xB0 + channel, 123, 0), byteorder="little"))
-                a_has_active_notes = [[False for _ in range(128)] for _ in range(16)]
+
+
+
+
         if TYPE_CHECKING:
             event = (0, 0, 0, 0, 0)
         audio_start = time.perf_counter()
         while not (paused or seekback_pending) or skipping: # AUDIO LOOP
             # Before checking, decide if we need to fetch a new event or reuse the old one
             if not a_reuse_event:
-                event = next(a_stream, None)
+                if STREAM_MIDI:
+                    event = next(a_stream, None)
+                elif a_index < unstream_len:
+                    event = unstream[a_index]
+                    a_index += 1
+                else:
+                    event = None
             else:
                 a_reuse_event = False  # Reset the flag since we just reused it
 
@@ -451,6 +511,8 @@ def main():
                             a_pitch_bend_range[event[2] & 0b1111] = event[4]
                 if event[2] >> 4 == 0xe: #pitch bend
                     a_pitch_bend[event[2] & 0b1111] = (event[3] + (event[4] << 7) - 8192) / 8192
+                if event[2] >> 4 == 0xc and a_override_instrument != -1 and event[2] & 0b1111 != 9: #program change
+                    event = (event[0], event[1], event[2], a_override_instrument, 0)
 
                 if ENABLE_AUDIO and (not skipping or event[2] >> 4 not in [0x8, 0x9]) and (event is not None):
                     # print(event)
@@ -482,7 +544,12 @@ def main():
             while True:
                 # Before checking, decide if we need to fetch a new event or reuse the old one
                 if not v_reuse_event:
-                    ev = next(v_stream, None)
+                    if STREAM_MIDI:
+                        ev = next(v_stream, None)
+                    elif v_index < unstream_len:
+                        ev = unstream[v_index]
+                        v_index += 1
+                    else: ev = None
                 else:
                     v_reuse_event = False  # Reset the flag since we just reused it
 
@@ -500,7 +567,20 @@ def main():
                     v_bpm = ev[3]
                     v_seconds_per_tick = 60 / (v_bpm * ppq)
 
-                if ev[2] != 0x51 and ev[2] >> 4 in (0x8, 0x9):
+                if ev[2] >> 4 == 0xb: #controller, here i'll only use it for pitch bend range
+                    if ev[3] == 0x64:
+                        v_rpn[ev[2] & 0b1111][0] = ev[4]
+                    elif ev[3] == 0x65:
+                        v_rpn[ev[2] & 0b1111][1] = ev[4]
+                    elif ev[3] == 0x06:
+                        if v_rpn[ev[2] & 0b1111][0] == 0 and v_rpn[ev[2] & 0b1111][1] == 0:
+                            v_pitch_bend_range[ev[2] & 0b1111] = ev[4]
+
+                if ev[2] >> 4 == 0xe: #pitchbend
+                    v_pitch_bend[ev[2] & 0b1111] = (ev[3] + (ev[4] << 7) - 8192) / 8192
+
+
+                if ev[2] >> 4 in (0x8, 0x9):
                     tr = ev[0]
                     ch = ev[2] & 0b1111
                     no = ev[3]
@@ -510,7 +590,7 @@ def main():
                     if ev[2] >> 4 == 0x9 and ev[4] != 0:
                         if note_key not in v_notes:
                             v_notes[note_key] = deque()
-                        v_notes[note_key].append((v_current_time, ev[4]))
+                        v_notes[note_key].append((v_current_time, ev[4], v_pitch_bend[ch] * v_pitch_bend_range[ch]))
                         color_key = (tr << 8) | ch
                         if color_key not in color_palette:
                             fill_rgb = PFA_COLORS[current_color_index % 16]
@@ -524,13 +604,13 @@ def main():
                     # NOTE OFF
                     else:
                         if note_key in v_notes and v_notes[note_key]:
-                            start_t, _ = v_notes[note_key].popleft()
+                            start_t, _, pb_offset = v_notes[note_key].popleft()
                             duration = v_current_time - start_t
                             if not v_notes[note_key]:
                                 del v_notes[note_key]
 
                             if v_current_time >= midi_time - v_notespeed:
-                                v_falling_notes.append((start_t, ch, tr, no, duration))
+                                v_falling_notes.append((start_t, ch, tr, no, duration, pb_offset))
 
                 v_last_tick = ev[1]
         pv_dur = time.perf_counter() - pv_start
@@ -550,18 +630,17 @@ def main():
 
         # --- 3. DRAW ALL NOTES (Unified) ---
         sort_start = time.perf_counter()
-        render_queue = []
+        render_queue: list[tuple[float, int, int, int, float, float]] = []
         if ENABLE_VISUALIZATION:
-
             render_queue.extend(v_falling_notes)
 
             for note_key, note_list in v_notes.items():
                 tr = note_key >> 16
                 ch = (note_key >> 8) & 0xFF
                 no = note_key & 0xFF
-                for start, _ in note_list:
+                for start, _, pb_offset in note_list:
                     duration = midi_time - start
-                    render_queue.append((start, ch, tr, no, duration))
+                    render_queue.append((start, ch, tr, no, duration, pb_offset))
 
             render_queue.sort()
         sort_dur = time.perf_counter() - sort_start
@@ -637,7 +716,7 @@ def main():
         r_max_key_cy = HEIGHT * KB_PERCENT
         r_ideal_key_cy = r_white_cx / KEY_RATIO
         # .95 for the top vs near. 2.0 for the spacer. .93 for the transition and the red. ESTIMATE.
-        r_ideal_key_cy = (r_ideal_key_cy / 0.95 + 2) / 0.93
+        r_ideal_key_cy = (r_ideal_key_cy / 0.95 + 2.0) / 0.93
         r_notes_cy = math.floor(HEIGHT - min(r_ideal_key_cy, r_max_key_cy) + 0.5)
 
         # Round down start time. This is only used for rendering purposes
@@ -924,6 +1003,9 @@ def main():
             ])
         if behind:
             info_text.append((f"Lagging behind by {abs(real_time - midi_time)//60:.0f}:{abs(real_time - midi_time)%60:0>7.4f}", pr.RED))
+        if a_override_instrument != -1:
+            info_text.extend([(f"Instrument override: {a_override_instrument}", pr.YELLOW)])
+
 
         if seekback_pending:
             seekback_text = f"Seek backwards by {abs(seekback_amount)} seconds? Press [Enter] to confirm"

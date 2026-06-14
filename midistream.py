@@ -82,7 +82,7 @@ def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], track_num: int,
                     tempo_us <<= 8
                     tempo_us += i
                 tempo = 60_000_000.0/float(tempo_us)
-                yield (track_num, current_time, 0x51, tempo)
+                yield (track_num, current_time, 0x51, tempo, 0)
                 ci += length[0]
             else:
                 ci += length[0]
@@ -108,7 +108,7 @@ def parse_track(m_file: mmap.mmap, track_index: tuple[int, int], track_num: int,
             ci += 2
 
         elif event_type >> 4 in [0xc, 0xd]: # program change/channel pressure event
-            yield (track_num, current_time, event_type, chunk[ci])
+            yield (track_num, current_time, event_type, chunk[ci], 0)
             ci += 1
 
         if event_type < 0xF0:
@@ -127,6 +127,20 @@ def midi_stream(file: Path, verbose=False):
             yield None
             for event in merged_stream:
                 yield event
+
+def midi_unstream(file: Path, verbose=False):
+    meow = []
+    count = 0
+    stream = midi_stream(file, verbose)
+    next(stream, None)
+    for m in stream:
+        meow.append(m)
+        count += 1
+        if count % 1000 == 0:
+            print(f"Processed {count:,} events", end="\r")
+    print()
+    return meow
+
 
 if __name__ == "__main__":
     stream = midi_stream(Path(r"D:\MIDIs\Toilet_Story_3_-_700_TRACK_VERSION\Toilet Story 3 - 700 TRACK VERSION!!!.mid"), verbose=True)
